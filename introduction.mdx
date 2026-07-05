@@ -1,0 +1,101 @@
+---
+title: "ServiciosYa API: Multi-tenant service platform backend"
+sidebarTitle: "Introduction"
+description: "ServiciosYa API is an ASP.NET Core 8 REST service for managing service catalogs, requests, payments, and audit trails across multiple tenants."
+---
+
+ServiciosYa API is the central backend for a multi-tenant logistics and services platform. It handles everything from JWT-based authentication and role-scoped authorization to service catalog management, payment voucher validation, file uploads, and structured audit logging — all while keeping each company's data strictly isolated through a `CompanyID` tenancy model.
+
+## What problem does it solve?
+
+Traditional service-request workflows rely on phone calls, paper forms, or scattered spreadsheets. ServiciosYa replaces that with a structured API that lets customers browse an active service catalog, submit requests with a payment voucher attached, and track their request status end-to-end. At the same time, internal staff (gestor, admin, super-admin) get a full administrative surface to create services, validate payments, move requests through their lifecycle, and audit every significant action.
+
+## Key capabilities
+
+- **JWT authentication** — stateless Bearer tokens with role and company claims; automatic JSON `401`/`403` responses for clean client error handling.
+- **Multi-tenancy** — every query and write is scoped to the authenticated user's `CompanyID` extracted from the JWT. A `SUPER_ADMIN` can operate across all tenants.
+- **Service catalog** — create, update, activate/deactivate, and soft-delete services grouped by category; control whether a service accepts an optional file attachment.
+- **Service request lifecycle** — customers create requests in `SOLICITADO` state with a mandatory payment voucher image; staff advance them through `EN_PROCESO`, `FINALIZADO`, or `CANCELADO_*` states via dedicated endpoints.
+- **Payment validation** — internal roles validate or reject the uploaded payment proof; a cancellation-and-refund flow tracks `PENDIENTE_DEVOLUCION` → `REINTEGRADO`.
+- **File uploads** — payment vouchers and optional per-request attachments stored under `wwwroot/uploads`; 10 MB multipart limit enforced at the framework level.
+- **Audit logging** — every state change and sensitive operation is persisted through `InsertAuditLog` stored procedure calls via the `IAuditEventService`.
+- **System diagnostics** — a suite of `/api/v1/system/*` endpoints for health checks, in-memory metrics, and audit log queries, guarded by `Diagnostics:EnableDiagnostics`.
+
+## Architecture overview
+
+Both client surfaces — an Angular web portal used by internal staff and a .NET MAUI Android app used by end customers — consume this single API. The API delegates persistence to SQL Server (`EncomiendasDB`) exclusively through Dapper and stored procedures; there is no ORM.
+
+```
+┌─────────────────────┐     ┌─────────────────────┐
+│  Angular Web Portal │     │  .NET MAUI Android  │
+│  (PrimeNG, JWT)     │     │  (HttpClient, MAUI) │
+└────────┬────────────┘     └──────────┬──────────┘
+         │  HTTPS + Bearer             │  HTTPS + Bearer
+         └──────────────┬──────────────┘
+                        ▼
+          ┌─────────────────────────┐
+          │   ServiciosYa API       │
+          │   ASP.NET Core 8        │
+          │   Dapper · JWT · CORS   │
+          └──────┬──────────┬───────┘
+                 │          │
+        ┌────────▼───┐  ┌───▼──────────────┐
+        │ SQL Server │  │  wwwroot/uploads  │
+        │EncomiendasDB│  │  (file storage)  │
+        └────────────┘  └──────────────────┘
+```
+
+The CORS policy (`AllowAngular`) permits `localhost:4200` and `app.tramiya.com.py` for the web portal. The mobile app communicates via the same JWT-authenticated endpoints, handling certificates through its own HttpClient configuration.
+
+## Service categories
+
+The platform ships with six predefined service categories:
+
+| Category |
+|---|
+| Escribanía y legales |
+| Presentación de documentos |
+| Pago de impuestos patentes y otros |
+| Traducciones legales |
+| Delivery |
+| Otros |
+
+Services are created by internal roles and assigned to one of these categories. Customers browse services grouped by category through the `/api/services/by-category` endpoint.
+
+## Role hierarchy
+
+| Role | Scope | Can manage services | Can manage requests |
+|---|---|---|---|
+| `SUPER_ADMIN` | Global (all tenants) | Full CRUD | Full CRUD + delete |
+| `ADMIN_GENERAL` | Own company | Create, edit, toggle, soft-delete | View, validate payment, change status |
+| `GESTOR_SUPREMO` | Own company | Create, edit, toggle, soft-delete | View, validate payment, change select statuses |
+| `GESTOR` | Operational | None | Confirm refunds |
+| `CUSTOMER` | Own requests only | None | Create request, view own, cancel if eligible |
+
+## Tech stack
+
+| Component | Technology |
+|---|---|
+| Runtime | ASP.NET Core 8 (`net8.0`) |
+| Data access | Dapper 2.1.72 + `Microsoft.Data.SqlClient` 7.0.0 |
+| Database | SQL Server (`EncomiendasDB`) |
+| Authentication | JWT Bearer (`Microsoft.AspNetCore.Authentication.JwtBearer` 8.0.0) |
+| API docs | Swashbuckle / Swagger UI (Development only) |
+| Assembly version | 1.0.0.0 |
+
+## Explore the docs
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Run the API locally in five steps: clone, configure, migrate, start, authenticate.
+  </Card>
+  <Card title="Core Concepts & Architecture" icon="sitemap" href="/concepts/architecture">
+    Deep-dive into tenancy, the request lifecycle, roles, and stored-procedure patterns.
+  </Card>
+  <Card title="API Reference — Auth" icon="key" href="/api/auth/login">
+    Login, registration, user management, and password-change endpoints.
+  </Card>
+  <Card title="Configuration" icon="gear" href="/configuration">
+    All appsettings.json sections explained with production-ready guidance.
+  </Card>
+</CardGroup>

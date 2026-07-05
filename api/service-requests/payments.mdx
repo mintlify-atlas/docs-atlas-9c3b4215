@@ -1,0 +1,135 @@
+---
+title: "Validate payments and confirm refunds on service requests"
+sidebarTitle: "Payments"
+description: "PUT /api/servicerequests/{id}/payment approves or rejects a payment proof. PUT /api/servicerequests/{id}/refund confirms a customer refund after cancellation."
+---
+
+Every service request carries a linked payment record that is created automatically in `PENDIENTE` state when the request is submitted. Staff with the appropriate roles review the uploaded payment proof image and either approve or reject it. When a customer cancels a request that already has a payment on file, the payment moves to `PENDIENTE_DEVOLUCION` until a staff member confirms the money was returned using the refund endpoint.
+
+## Payment state reference
+
+| State | Meaning |
+|---|---|
+| `PENDIENTE` | Payment proof uploaded; awaiting staff review |
+| `VALIDADO` | Payment approved; request moves to `EN_PROCESO` |
+| `RECHAZADO` | Payment rejected; request moves to `CANCELADO_PAGO` |
+| `PENDIENTE_DEVOLUCION` | Request was cancelled by the customer; refund not yet confirmed |
+| `REINTEGRADO` | Refund confirmed by staff; money returned to customer |
+
+---
+
+## PUT /api/servicerequests/{id}/payment — Validate or reject payment
+
+Reviews the payment proof for a service request. Approving the payment advances the request to `EN_PROCESO`; rejecting it moves the request to `CANCELADO_PAGO`. Both paths are handled by the `ValidateServiceRequestPayment` stored procedure.
+
+**Authentication:** Bearer token — `SUPER_ADMIN`, `ADMIN_GENERAL`, or `GESTOR_SUPREMO`
+
+### Path parameters
+
+<ParamField path="id" type="integer" required>
+  The `requestId` of the service request whose payment is being reviewed.
+</ParamField>
+
+### Request body
+
+<ParamField body="approve" type="boolean" required>
+  Set to `true` to approve the payment proof and advance the request to `EN_PROCESO`. Set to `false` to reject it and move the request to `CANCELADO_PAGO`.
+</ParamField>
+
+<ParamField body="quantity" type="integer">
+  The actual quantity or amount to record for this request. When provided, the stored procedure uses this value to calculate `TotalPaid`. Defaults to `1` if omitted.
+</ParamField>
+
+### Response
+
+<ResponseField name="message" type="string">
+  A human-readable confirmation of the action taken: `"Pago validado"` on approval or `"Pago rechazado"` on rejection.
+</ResponseField>
+
+**On approval:**
+
+```json
+{ "message": "Pago validado" }
+```
+
+**On rejection:**
+
+```json
+{ "message": "Pago rechazado" }
+```
+
+---
+
+## PUT /api/servicerequests/{id}/refund — Confirm refund
+
+Confirms that the money for a cancelled request has been returned to the customer. This endpoint is used after a request reaches `CANCELADO_USUARIO` state — meaning the customer cancelled while the payment was still `PENDIENTE`. The stored procedure moves the payment from `PENDIENTE_DEVOLUCION` to `REINTEGRADO`.
+
+**Authentication:** Bearer token — `SUPER_ADMIN`, `ADMIN_GENERAL`, `GESTOR_SUPREMO`, or `GESTOR`
+
+### Path parameters
+
+<ParamField path="id" type="integer" required>
+  The `requestId` of the cancelled service request being refunded.
+</ParamField>
+
+### Response
+
+<ResponseField name="message" type="string">
+  A confirmation message asking staff to verify the funds reached the customer's account.
+</ResponseField>
+
+```json
+{
+  "message": "Reintegro confirmado. Por favor verifica que el dinero ingresó a su cuenta, estamos atentos a cualquier inquietud. Gracias."
+}
+```
+
+<Tip>
+  Use `GET /api/servicerequests/cancellation-reminders` to get a list of all requests that were cancelled by customers and are awaiting refund confirmation. Each reminder includes the `requestID` you need to call this endpoint. Once the refund is confirmed, resolve the reminder with `PUT /api/servicerequests/cancellation-reminders/{id}/resolve`.
+</Tip>
+
+---
+
+## Examples
+
+**Approve a payment and record quantity**
+
+```bash
+curl -X PUT https://your-api/api/servicerequests/123/payment \
+  -H "Authorization: Bearer <admin-token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "approve": true,
+    "quantity": 2
+  }'
+```
+
+```json
+{ "message": "Pago validado" }
+```
+
+**Reject a payment**
+
+```bash
+curl -X PUT https://your-api/api/servicerequests/123/payment \
+  -H "Authorization: Bearer <admin-token>" \
+  -H "Content-Type: application/json" \
+  -d '{ "approve": false }'
+```
+
+```json
+{ "message": "Pago rechazado" }
+```
+
+**Confirm a refund after customer cancellation**
+
+```bash
+curl -X PUT https://your-api/api/servicerequests/123/refund \
+  -H "Authorization: Bearer <staff-token>"
+```
+
+```json
+{
+  "message": "Reintegro confirmado. Por favor verifica que el dinero ingresó a su cuenta, estamos atentos a cualquier inquietud. Gracias."
+}
+```

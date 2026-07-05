@@ -1,0 +1,151 @@
+{
+  "projectType": "api-service",
+  "projectName": "ServiciosYa API",
+  "projectDescription": "ASP.NET Core REST API for a multi-tenant logistics and services platform, providing JWT-authenticated endpoints for service catalog management, service request lifecycle, payment validation, file uploads, audit logging, and system diagnostics.",
+  "theme": "luma",
+  "primaryColor": "#2563EB",
+  "lightColor": "#DBEAFE",
+  "darkColor": "#1E3A5F",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "configuration"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/architecture",
+              "concepts/authentication",
+              "concepts/roles-and-tenancy",
+              "concepts/request-lifecycle"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/database-setup",
+              "guides/file-uploads",
+              "guides/password-reset",
+              "guides/audit-logging"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Authentication",
+            "pages": [
+              "api/auth/login",
+              "api/auth/register",
+              "api/auth/users",
+              "api/auth/password"
+            ]
+          },
+          {
+            "group": "Services",
+            "pages": [
+              "api/services/overview",
+              "api/services/catalog",
+              "api/services/custom-requests"
+            ]
+          },
+          {
+            "group": "Service Requests",
+            "pages": [
+              "api/service-requests/create",
+              "api/service-requests/status",
+              "api/service-requests/payments",
+              "api/service-requests/attachments"
+            ]
+          },
+          {
+            "group": "System",
+            "pages": [
+              "api/system/health",
+              "api/system/diagnostics",
+              "api/system/audit"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "JWT Bearer authentication with role-based authorization (SUPER_ADMIN, ADMIN_GENERAL, GESTOR_SUPREMO, GESTOR, CUSTOMER)",
+    "Multi-tenant architecture with per-company data isolation via CompanyID claim",
+    "Full service catalog management with activation/deactivation and logical deletion",
+    "Service request lifecycle: creation, payment proof upload, manual payment validation, status transitions, and refund confirmation",
+    "Custom (uncatalogued) service request pipeline for ad-hoc service inquiries",
+    "File upload support for payment proofs, optional attachments, invoices, and delivery documents",
+    "OTP-based password reset flow with configurable expiration and rate limiting",
+    "Dual audit trail: legacy audit logs and a structured AuditEvents/AuditChanges PRO system",
+    "System diagnostics endpoints (status, metrics, resources, recent errors) restricted to SUPER_ADMIN",
+    "Middleware stack: correlation ID tracking, structured request logging, and JSON error normalization"
+  ],
+  "publicApiSurface": [
+    "POST /api/auth/login",
+    "POST /api/auth/register",
+    "POST /api/auth/register/internal",
+    "GET /api/auth/users",
+    "GET /api/auth/users/{id}",
+    "PATCH /api/auth/users/{id}/toggle",
+    "DELETE /api/auth/users/{id}",
+    "GET /api/auth/companies",
+    "GET /api/auth/me",
+    "POST /api/auth/change-password",
+    "POST /api/auth/forgot-password",
+    "POST /api/auth/reset-password",
+    "POST /api/services",
+    "PUT /api/services/{id}",
+    "PATCH /api/services/{id}/toggle",
+    "DELETE /api/services/{id}",
+    "GET /api/services",
+    "GET /api/services/available",
+    "GET /api/services/{id}",
+    "GET /api/services/by-category",
+    "POST /api/servicerequests",
+    "GET /api/servicerequests/my",
+    "GET /api/servicerequests",
+    "GET /api/servicerequests/{id}",
+    "PUT /api/servicerequests/{id}/status",
+    "PUT /api/servicerequests/{id}/payment",
+    "PUT /api/servicerequests/{id}/refund",
+    "POST /api/servicerequests/{id}/attachment",
+    "GET /api/servicerequests/{id}/attachment",
+    "POST /api/servicerequests/{id}/invoice",
+    "POST /api/servicerequests/{id}/delivery-attachment",
+    "GET /api/servicerequests/cancellation-reminders",
+    "PUT /api/servicerequests/cancellation-reminders/{id}/resolve",
+    "DELETE /api/servicerequests/{id}",
+    "POST /api/custom-service-requests",
+    "GET /api/custom-service-requests",
+    "PUT /api/custom-service-requests/{id}/status",
+    "POST /api/uploads/payment",
+    "GET /api/customers",
+    "GET /api/customers/{id}",
+    "POST /api/customers",
+    "PUT /api/customers/{id}",
+    "PATCH /api/customers/{id}/toggle",
+    "POST /api/audit/logs",
+    "POST /api/v1/audit/events/search",
+    "GET /api/v1/audit/events/{id}",
+    "POST /api/v1/audit/{id}/hide",
+    "POST /api/v1/audit/{id}/unhide",
+    "GET /api/v1/system/status",
+    "GET /api/v1/system/metrics",
+    "GET /api/v1/system/resources",
+    "GET /api/v1/system/errors",
+    "GET /health/live",
+    "GET /health/ready"
+  ]
+}

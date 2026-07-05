@@ -1,0 +1,192 @@
+---
+title: "Set up the ServiciosYa SQL Server database"
+sidebarTitle: "Database Setup"
+description: "How to create EncomiendasDB, run all migrations in order, and understand the stored procedures that back the ServiciosYa API."
+---
+
+The ServiciosYa API stores all persistent state — users, companies, services, service requests, payments, and audit trails — in a SQL Server database named `EncomiendasDB`. All business rules are enforced by a set of stored procedures that the API calls through Dapper; there is no ORM-generated schema. This guide walks you through creating the database and running every migration in the correct order.
+
+## Prerequisites
+
+- **SQL Server** — Express edition or full. SQL Server 2019 or later is recommended.
+- **Client tooling** — either [SQL Server Management Studio (SSMS)](https://learn.microsoft.com/sql/ssms/download-sql-server-management-studio-ssms) or the `sqlcmd` command-line utility.
+- The migration files located in `Database/Migrations/` of the repository.
+
+## Step 1 — Create the database
+
+Connect to your SQL Server instance and run:
+
+```sql
+CREATE DATABASE EncomiendasDB;
+GO
+```
+
+Then point your connection string at it:
+
+```
+Server=localhost;Database=EncomiendasDB;Trusted_Connection=True;TrustServerCertificate=True;
+```
+
+<Note>
+  In production, replace `Trusted_Connection=True` with a dedicated SQL login. See the [Production note](#production-note) at the bottom of this page.
+</Note>
+
+## Step 2 — Run migrations in order
+
+<Warning>
+  Migrations must be executed in the exact order listed below. Each script assumes the objects created by all previous scripts already exist. Running them out of order will produce foreign-key, column, or stored-procedure errors that are difficult to roll back.
+</Warning>
+
+Run each file with `sqlcmd`:
+
+```bash
+sqlcmd -S localhost -d EncomiendasDB -E -i "Database/Migrations/<filename>.sql"
+```
+
+Or open each file in SSMS, verify the target database is `EncomiendasDB`, and execute.
+
+### Migration files
+
+<Steps>
+  <Step title="2026-04-20_auth_customer.sql — User authentication and customer tables">
+    Creates the `RegisterCustomerUser` and `ChangeUserPassword` stored procedures. Establishes the baseline user-registration logic, SHA-256 password hashing, and the initial audit hook to `dbo.InsertAuditLog`.
+  </Step>
+
+  <Step title="2026-04-20_services_hardening.sql — Services and service-request hardening">
+    Adds the `MustChangePassword` column to `dbo.[User]` and soft-delete columns (`IsDeleted`, `DeletedAt`, `DeletedBy`) to `dbo.Services`. Creates or replaces the core stored procedures: `Auth_Login`, `CreateService`, `UpdateService`, `ToggleServiceStatus`, `DeleteService`, `GetServices`, `GetServicesByCategory`, `CreateServiceRequest`, `GetUserServiceRequests`, `GetServiceRequestsAdmin`, `GetServiceRequestById`, `CreateServiceRequestAttachment`, `UpdateServiceRequestStatus`, and `ValidateServiceRequestPayment`.
+  </Step>
+
+  <Step title="2026-04-21_company1_default_services.sql — Base ServiciosYa company and default services">
+    Seeds the primary company record and its initial catalogue of services so the API has a working tenant from first boot.
+  </Step>
+
+  <Step title="2026-04-21_internal_user_registration.sql — Internal user registration stored procedure">
+    Creates the stored procedure used by administrators to register internal users (`ADMIN_GENERAL`, `GESTOR_SUPREMO`, `GESTOR`, `CUSTOMER`) with role-hierarchy enforcement.
+  </Step>
+
+  <Step title="2026-04-22_role_hierarchy.sql — Final role hierarchy setup">
+    Ensures all five roles (`SUPER_ADMIN`, `ADMIN_GENERAL`, `GESTOR_SUPREMO`, `GESTOR`, `CUSTOMER`) exist in `dbo.Role` and creates the initial `SUPER_ADMIN` account if none is present.
+  </Step>
+
+  <Step title="2026-04-26_cancellation_refund_notifications.sql — Cancellation and refund notifications">
+    Adds stored procedures and data structures that support cancellation reminders and refund workflow notifications.
+  </Step>
+
+  <Step title="2026-04-26_cancelled_user_payments.sql — Cancelled-user payment tracking">
+    Extends payment-state tracking for requests cancelled by the customer, enabling the `PENDIENTE_DEVOLUCION` → `REINTEGRADO` refund flow.
+  </Step>
+
+  <Step title="2026-04-26_invoice_requirement.sql — Invoice requirement flag">
+    Adds the `RequiresInvoice`, `RazonSocial`, and `RUC` fields to `dbo.ServiceRequests` so customers can request an invoice at the time of submission.
+  </Step>
+
+  <Step title="2026-04-26_payment_action_and_service_delete_rules.sql — Payment action and service delete rules">
+    Hardens referential-integrity rules between service requests, payments, and services, and adds safeguards around service deletion.
+  </Step>
+
+  <Step title="2026-04-27_audit_pro_and_diagnostics.sql — AuditEvents and AuditChanges tables">
+    Creates the PRO audit tables `dbo.AuditEvents` and `dbo.AuditChanges` plus five covering indexes (`IX_AuditEvents_TimestampUtc`, `IX_AuditEvents_CompanyId_TimestampUtc`, `IX_AuditEvents_UserId_TimestampUtc`, `IX_AuditEvents_CorrelationId`, `IX_AuditEvents_IsVisibleForAdmins_TimestampUtc`). This migration is idempotent — it uses `IF OBJECT_ID(...) IS NULL` guards.
+  </Step>
+
+  <Step title="2026-04-28_fix_getauditlogs_cte_scope.sql — Fix GetAuditLogs CTE scope">
+    Replaces the `dbo.GetAuditLogs` stored procedure to eliminate a CTE-reuse bug. The revised version materialises filtered rows into a temporary table (`#AuditFiltered`) before counting and paging, which is required by SQL Server.
+  </Step>
+
+  <Step title="2026-04-30_production_versioning_and_user_deletion.sql — Production versioning and user deletion">
+    Adds versioning metadata and the deferred user-deletion flow: users with pending service requests are marked `PendingDeletion` instead of being removed immediately.
+  </Step>
+
+  <Step title="2026-05-25_role_hierarchy_alignment.sql — Role hierarchy alignment">
+    Aligns stored-procedure role checks across the codebase so that every procedure consistently respects the five-level hierarchy introduced in the April migrations.
+  </Step>
+
+  <Step title="2026-05-25_service_request_snapshots.sql — Service request snapshots">
+    Creates snapshot tables or columns that preserve the service configuration (price, name, estimated time) at the moment a request is submitted, so historical records remain accurate even if the service is later updated.
+  </Step>
+
+  <Step title="2026-05-26_custom_service_requests.sql — Custom service requests">
+    Extends the service-request model to support custom (non-catalogue) service entries that administrators can create ad hoc.
+  </Step>
+
+  <Step title="2026-05-31_tramiya_default_user_registration.sql — Tramiya default user registration">
+    Seeds the default internal users for the Tramiya tenant, following the same pattern as `company1_default_services.sql`.
+  </Step>
+
+  <Step title="2026-06-01_service_request_delivery_attachment.sql — Delivery attachment">
+    Adds the `DeliveryAttachmentUrl` column to `dbo.ServiceRequests` and the stored procedure that sets it, used by the `POST /api/servicerequests/{id}/delivery-attachment` endpoint.
+  </Step>
+
+  <Step title="2026-06-01_service_request_payment_quantity.sql — Payment quantity">
+    Adds a `Quantity` field to `dbo.ServiceRequestPayments` so administrators can record the exact amount validated during payment review.
+  </Step>
+</Steps>
+
+## Key stored procedures
+
+The following stored procedures are the primary interface between the API and the database. All are created or replaced by the migrations above.
+
+| Stored Procedure | Module | Description |
+|---|---|---|
+| `Auth_Login` | Auth | Validates credentials, returns user/role/company, logs audit entry |
+| `RegisterCustomerUser` | Auth | Self-registration or actor-driven customer creation |
+| `ChangeUserPassword` | Auth | Changes password after verifying the current one |
+| `CreateService` | Services | Creates a new service; enforces role and name uniqueness |
+| `UpdateService` | Services | Updates service fields; preserves old values in audit log |
+| `ToggleServiceStatus` | Services | Flips `IsActive`; records status-change audit entry |
+| `DeleteService` | Services | Logical delete (`IsDeleted = 1`); only `SUPER_ADMIN` |
+| `GetServices` | Services | Paginated admin list with search and active filter |
+| `GetServicesByCategory` | Services | Active services filtered by category, for customer use |
+| `CreateServiceRequest` | Requests | Creates request + `ServiceRequestPayments` with `PENDIENTE` status |
+| `GetUserServiceRequests` | Requests | Customer's own request history |
+| `GetServiceRequestsAdmin` | Requests | Paginated admin view with user and service join |
+| `GetServiceRequestById` | Requests | Full detail for a single request |
+| `CreateServiceRequestAttachment` | Requests | Attaches an optional file; enforces `PermiteAdjunto = 1` |
+| `UpdateServiceRequestStatus` | Requests | State-machine transitions enforced by role |
+| `ValidateServiceRequestPayment` | Payments | Approves or rejects payment; advances or cancels request |
+| `InsertAuditLog` | Audit | Writes a legacy audit row; called internally by all other procs |
+
+## sqlcmd one-liner for a single migration
+
+```bash
+sqlcmd \
+  -S "localhost\SQLEXPRESS" \
+  -d EncomiendasDB \
+  -E \
+  -i "Database/Migrations/2026-04-27_audit_pro_and_diagnostics.sql"
+```
+
+To run all migrations sequentially from a shell script:
+
+```bash
+for file in Database/Migrations/*.sql; do
+  echo "Running $file..."
+  sqlcmd -S localhost -d EncomiendasDB -E -i "$file"
+done
+```
+
+<Warning>
+  The glob `*.sql` expands in alphabetical order on most shells, which matches the date-prefixed naming convention. Verify the order before running in production.
+</Warning>
+
+## Production note
+
+Avoid `Trusted_Connection` in production. Create a dedicated SQL login with the minimum permissions required:
+
+```sql
+CREATE LOGIN serviciosya_app WITH PASSWORD = 'StrongPassword123!';
+CREATE USER serviciosya_app FOR LOGIN serviciosya_app;
+ALTER ROLE db_datareader ADD MEMBER serviciosya_app;
+ALTER ROLE db_datawriter ADD MEMBER serviciosya_app;
+-- Grant EXECUTE on stored procedures
+GRANT EXECUTE ON SCHEMA::dbo TO serviciosya_app;
+```
+
+Then update `appsettings.json`:
+
+```json
+{
+  "ConnectionStrings": {
+    "DefaultConnection": "Server=prod-sql;Database=EncomiendasDB;User Id=serviciosya_app;Password=StrongPassword123!;TrustServerCertificate=True;"
+  }
+}
+```

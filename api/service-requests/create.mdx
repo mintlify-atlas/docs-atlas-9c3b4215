@@ -1,0 +1,252 @@
+---
+title: "Create and retrieve service requests in ServiciosYa API"
+sidebarTitle: "Create & Retrieve"
+description: "POST /api/servicerequests creates a new service request with a payment proof URL. GET endpoints let customers view their own requests and admins view all."
+---
+
+A service request is the core transactional unit in ServiciosYa. It links a user, a catalog service, and a payment proof image. When you create a request the API calls the `CreateServiceRequest` stored procedure, which writes a `ServiceRequests` row **and** a matching `ServiceRequestPayments` row in `PENDIENTE` state in a single atomic operation. Status management, payment validation, and file attachments all operate on top of this record.
+
+<Note>
+  Before creating a request you must upload a payment proof image via `POST /api/uploads/payment`. That call returns an `imageUrl` which you pass to the create endpoint below. Without a valid `imageUrl` the create call returns `400 Bad Request`.
+</Note>
+
+---
+
+## POST /api/servicerequests — Create a service request
+
+Any authenticated user can create a service request. The caller's `CompanyID` and `UserID` are resolved automatically from the JWT claims — you do not need to supply them in the body.
+
+**Authentication:** Bearer token (any role)
+
+### Request body
+
+<ParamField body="serviceID" type="integer" required>
+  The ID of the catalog service being requested. Must be an active, non-deleted service belonging to the caller's company.
+</ParamField>
+
+<ParamField body="imageUrl" type="string" required>
+  The absolute URL of the payment proof image returned by `POST /api/uploads/payment`. The request is rejected with `400 Bad Request` if this field is absent or blank.
+</ParamField>
+
+<ParamField body="requiresInvoice" type="boolean">
+  Set to `true` if the customer needs a fiscal invoice for this request. Defaults to `false`.
+</ParamField>
+
+<ParamField body="razonSocial" type="string">
+  Company name to print on the invoice. Required by your business process when `requiresInvoice` is `true`.
+</ParamField>
+
+<ParamField body="ruc" type="string">
+  Tax identification number (RUC) for the invoice. Required by your business process when `requiresInvoice` is `true`.
+</ParamField>
+
+### Response
+
+<ResponseField name="requestId" type="integer">
+  The auto-generated ID of the newly created service request. Store this value — you will need it for status updates, payment validation, and file uploads.
+</ResponseField>
+
+```json
+{ "requestId": 123 }
+```
+
+<Note>
+  When `requiresInvoice` is `true`, staff must later upload the invoice document via `POST /api/servicerequests/{id}/invoice` once the payment is approved and the service is in progress. See the [Attachments](/api/service-requests/attachments) page for details.
+</Note>
+
+---
+
+## GET /api/servicerequests/my — Get my requests
+
+Returns a paginated list of service requests belonging to the authenticated caller. Customers use this endpoint to track their own history; internal staff can also call it to see only the requests they personally submitted.
+
+**Authentication:** Bearer token (any role)
+
+### Query parameters
+
+<ParamField query="pageNumber" type="integer">
+  Page to return. Defaults to `1`.
+</ParamField>
+
+<ParamField query="pageSize" type="integer">
+  Number of records per page. Defaults to `20`.
+</ParamField>
+
+<ParamField query="search" type="string">
+  Free-text filter applied against service name, request ID, and customer fields.
+</ParamField>
+
+<ParamField query="status" type="string">
+  Filter by request status. Accepted values: `SOLICITADO`, `EN_PROCESO`, `FINALIZADO`, `CANCELADO_USUARIO`, `CANCELADO_PAGO`.
+</ParamField>
+
+<ParamField query="paymentStatus" type="string">
+  Filter by payment status. Accepted values: `PENDIENTE`, `VALIDADO`, `RECHAZADO`, `PENDIENTE_DEVOLUCION`, `REINTEGRADO`.
+</ParamField>
+
+### Response
+
+Returns a paginated wrapper containing an array of [ServiceRequestDto](#servicerequestdto-fields) objects.
+
+---
+
+## GET /api/servicerequests — Admin: all requests
+
+Returns a paginated list of **all** service requests for the caller's company. This endpoint is restricted to administrative roles.
+
+**Authentication:** Bearer token — `SUPER_ADMIN`, `ADMIN_GENERAL`, or `GESTOR_SUPREMO`
+
+### Query parameters
+
+<ParamField query="pageNumber" type="integer">
+  Page to return. Defaults to `1`.
+</ParamField>
+
+<ParamField query="pageSize" type="integer">
+  Number of records per page. Defaults to `10`.
+</ParamField>
+
+<ParamField query="search" type="string">
+  Free-text filter applied against service name, request ID, and customer fields.
+</ParamField>
+
+<ParamField query="status" type="string">
+  Filter by request status. Accepted values: `SOLICITADO`, `EN_PROCESO`, `FINALIZADO`, `CANCELADO_USUARIO`, `CANCELADO_PAGO`.
+</ParamField>
+
+<ParamField query="paymentStatus" type="string">
+  Filter by payment status. Accepted values: `PENDIENTE`, `VALIDADO`, `RECHAZADO`, `PENDIENTE_DEVOLUCION`, `REINTEGRADO`.
+</ParamField>
+
+### Response
+
+Returns a paginated wrapper containing an array of [ServiceRequestDto](#servicerequestdto-fields) objects.
+
+---
+
+## GET /api/servicerequests/{id} — Get single request
+
+Returns the full detail of a single service request, including customer info, service info, and payment state.
+
+**Authentication:** Bearer token (any role)
+
+### Path parameters
+
+<ParamField path="id" type="integer" required>
+  The `requestId` returned when the request was created.
+</ParamField>
+
+### ServiceRequestDto fields
+
+<ResponseField name="requestID" type="integer">Unique identifier of the service request.</ResponseField>
+<ResponseField name="status" type="string">Current request status: `SOLICITADO`, `EN_PROCESO`, `FINALIZADO`, `CANCELADO_USUARIO`, or `CANCELADO_PAGO`.</ResponseField>
+<ResponseField name="createdAt" type="string (ISO 8601)">Timestamp when the request was created.</ResponseField>
+<ResponseField name="updatedAt" type="string (ISO 8601)">Timestamp of the last status update, if any.</ResponseField>
+<ResponseField name="userID" type="integer">ID of the customer who submitted the request.</ResponseField>
+<ResponseField name="firstName" type="string">Customer's first name.</ResponseField>
+<ResponseField name="lastName" type="string">Customer's last name.</ResponseField>
+<ResponseField name="phone" type="string">Customer's phone number.</ResponseField>
+<ResponseField name="email" type="string">Customer's email address.</ResponseField>
+<ResponseField name="serviceID" type="integer">ID of the requested service.</ResponseField>
+<ResponseField name="serviceName" type="string">Display name of the service.</ResponseField>
+<ResponseField name="price" type="number">Unit price of the service at request time.</ResponseField>
+<ResponseField name="quantity" type="integer">Quantity recorded by the payment validator (default `1`).</ResponseField>
+<ResponseField name="totalPaid" type="number">Total amount paid, calculated as `price × quantity`.</ResponseField>
+<ResponseField name="estimatedTimeText" type="string">Human-readable estimated delivery time from the service definition.</ResponseField>
+<ResponseField name="category" type="string">Category of the service.</ResponseField>
+<ResponseField name="permiteAdjunto" type="boolean">Whether the service allows an optional additional attachment.</ResponseField>
+<ResponseField name="imageUrl" type="string">URL of the payment proof image.</ResponseField>
+<ResponseField name="paymentStatus" type="string">Current payment status: `PENDIENTE`, `VALIDADO`, `RECHAZADO`, `PENDIENTE_DEVOLUCION`, or `REINTEGRADO`.</ResponseField>
+<ResponseField name="validatedAt" type="string (ISO 8601)">Timestamp when the payment was validated or rejected.</ResponseField>
+<ResponseField name="validatedBy" type="integer">UserID of the staff member who reviewed the payment.</ResponseField>
+<ResponseField name="attachmentUrl" type="string">Relative path of the optional additional attachment, if uploaded.</ResponseField>
+<ResponseField name="requiresInvoice" type="boolean">Whether an invoice was requested at creation time.</ResponseField>
+<ResponseField name="razonSocial" type="string">Company name for the invoice, if provided.</ResponseField>
+<ResponseField name="ruc" type="string">Tax ID for the invoice, if provided.</ResponseField>
+<ResponseField name="invoiceAttachmentUrl" type="string">Relative path of the uploaded invoice document, if any.</ResponseField>
+<ResponseField name="deliveryAttachmentUrl" type="string">Relative path of the delivery confirmation document, if any.</ResponseField>
+
+---
+
+## DELETE /api/servicerequests/{id} — Delete request
+
+Performs a logical (soft) deletion of a service request. This operation is irreversible from the API layer. All historical data is preserved in the database and remains visible in audit logs.
+
+**Authentication:** Bearer token — `SUPER_ADMIN` only
+
+### Path parameters
+
+<ParamField path="id" type="integer" required>
+  The `requestId` of the request to delete.
+</ParamField>
+
+### Response
+
+Returns `204 No Content` on success.
+
+---
+
+## Two-step create flow
+
+The following example shows the complete flow: uploading a payment proof and then creating the service request.
+
+**Step 1 — Upload payment proof**
+
+```bash
+curl -X POST https://your-api/api/uploads/payment \
+  -H "Authorization: Bearer <token>" \
+  -F "file=@/path/to/receipt.jpg"
+```
+
+```json
+{
+  "imageUrl": "https://your-api/uploads/a1b2c3d4-e5f6-7890-abcd-ef1234567890.jpg"
+}
+```
+
+**Step 2 — Create the service request**
+
+```bash
+curl -X POST https://your-api/api/servicerequests \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "serviceID": 7,
+    "imageUrl": "https://your-api/uploads/a1b2c3d4-e5f6-7890-abcd-ef1234567890.jpg",
+    "requiresInvoice": true,
+    "razonSocial": "Distribuidora XYZ S.A.",
+    "ruc": "1234567890001"
+  }'
+```
+
+```json
+{ "requestId": 123 }
+```
+
+**Retrieve the request**
+
+```bash
+curl https://your-api/api/servicerequests/123 \
+  -H "Authorization: Bearer <token>"
+```
+
+**List my requests with filters**
+
+```bash
+curl "https://your-api/api/servicerequests/my?pageNumber=1&pageSize=20&status=SOLICITADO" \
+  -H "Authorization: Bearer <token>"
+```
+
+**Admin list — all requests**
+
+```bash
+curl "https://your-api/api/servicerequests?pageNumber=1&pageSize=10&paymentStatus=PENDIENTE" \
+  -H "Authorization: Bearer <token>"
+```
+
+**Delete a request (SUPER_ADMIN only)**
+
+```bash
+curl -X DELETE https://your-api/api/servicerequests/123 \
+  -H "Authorization: Bearer <token>"
+```

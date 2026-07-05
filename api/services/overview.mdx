@@ -1,0 +1,74 @@
+---
+title: "Services API overview: catalog management and discovery"
+sidebarTitle: "Overview"
+description: "ServiciosYa API organizes services by category with activation states, pricing, and attachment flags. Admin roles manage the catalog; customers browse available services."
+---
+
+The ServiciosYa Services API is the backbone of the platform's service catalog. Every service offered by a company is represented as a structured record that captures its name, pricing, category, estimated completion time, and several operational flags. Staff roles create and maintain these records; customers discover them through a filtered, customer-facing listing endpoint. Two distinct subsystems live under this domain: the **service catalog** (full CRUD for structured services) and **custom service requests** (free-form inquiries for services that are not yet in the catalog).
+
+## What is a service?
+
+A service is a tenant-scoped catalog entry that describes a single offering a company can fulfill. Services are organized by category, priced in decimal currency, and optionally allow customers to attach a supporting file when submitting a request. Each service can be independently activated or deactivated, and it can be logically deleted when it should no longer appear in any listing.
+
+## Service fields
+
+| Field | Type | Description |
+|---|---|---|
+| `serviceID` | `int` | Auto-generated primary key. |
+| `companyID` | `int` | Tenant identifier — every service belongs to exactly one company. |
+| `name` | `string` | Display name of the service. |
+| `description` | `string` | Optional free-text description. |
+| `referenceCode` | `string` | Optional internal code for the service. |
+| `price` | `decimal` | Customer-facing price. |
+| `cost` | `decimal` | Optional internal cost for margin tracking. |
+| `estimatedTimeText` | `string` | Human-readable turnaround estimate (e.g. `"2 a 3 días hábiles"`). |
+| `category` | `string` | One of the defined service categories (see below). |
+| `permiteAdjunto` | `bool` | When `true`, the service request form may include an optional file attachment beyond the payment voucher. |
+| `isActive` | `bool` | Controls visibility in the customer-facing catalog. |
+| `isDeleted` | `bool` | Logical deletion flag. Deleted services are hidden from all listings. |
+
+## Service categories
+
+All services must belong to one of the following canonical categories. The API normalises common variations automatically — see the [Catalog](/api/services/catalog) page for details.
+
+| Category value | Description |
+|---|---|
+| `Escribania y legales` | Notarial and legal services. |
+| `Presentacion de documentos` | Document filing and submission. |
+| `Pago de impuestos, patentes y otros` | Tax, registration fee, and miscellaneous payment processing. |
+| `Traducciones legales` | Certified legal translation. |
+| `Delivery` | Physical delivery and courier services. |
+| `Otros` | Uncategorised or general services. |
+
+## Role permissions
+
+ServiciosYa uses a hierarchical role model. The table below summarises which roles are authorised to use each part of the Services API.
+
+| Role | Manage catalog | Browse catalog | Custom requests |
+|---|---|---|---|
+| `SUPER_ADMIN` | ✅ Full access (including delete) | ✅ | ✅ Admin view |
+| `ADMIN_GENERAL` | ✅ Create / update / toggle | ✅ | ✅ Admin view |
+| `GESTOR_SUPREMO` | ✅ Create / update / toggle | ✅ | ✅ Admin view |
+| `GESTOR` | ✅ Create / update / toggle | ✅ Admin listing | ✅ Admin view |
+| `CUSTOMER` | ❌ | ✅ Available services only | ✅ Submit only |
+
+<Note>
+  Only `SUPER_ADMIN` can permanently (logically) delete a service via `DELETE /api/services/{id}`. All other admin roles can deactivate a service with the toggle endpoint.
+</Note>
+
+## Active vs. inactive services
+
+A service with `isActive: false` is invisible to customers browsing `GET /api/services/available` and `GET /api/services/by-category`. However, it remains visible in the admin listing (`GET /api/services`) and is never removed from historical service requests. Deactivating a service does not cancel any in-progress or past requests that reference it.
+
+A service with `isDeleted: true` is removed from **all** listings, including admin views.
+
+## Explore the API
+
+<CardGroup cols={2}>
+  <Card title="Service Catalog" icon="list" href="/api/services/catalog">
+    Create, update, toggle, delete, and query services in the catalog. Covers all CRUD endpoints with request/response shapes and curl examples.
+  </Card>
+  <Card title="Custom Requests" icon="envelope-open-text" href="/api/services/custom-requests">
+    Submit and manage free-form service inquiries. Learn the status lifecycle and how staff routes requests through to formal services.
+  </Card>
+</CardGroup>

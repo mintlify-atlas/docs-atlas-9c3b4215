@@ -1,0 +1,221 @@
+---
+title: "Authenticate requests to ServiciosYa API with JWT"
+sidebarTitle: "Authentication"
+description: "ServiciosYa API uses JWT Bearer tokens. Learn how tokens are issued, what claims they carry, and how to pass them in API requests."
+---
+
+ServiciosYa API uses JSON Web Token (JWT) Bearer authentication for all protected endpoints. A client obtains a token by posting credentials to the login endpoint. The API signs the token with HMAC-SHA256 using a symmetric key configured in `appsettings.json`, embeds identity claims directly into the token payload, and then validates those claims on every subsequent request — no session state is stored server-side. The login response also carries a `mustChangePassword` flag that gates further API access for newly provisioned internal users.
+
+## Obtaining a token
+
+Send a `POST` request to `/api/auth/login` with a JSON body containing `companyId`, `username`, and `password`.
+
+```bash
+curl -s -X POST https://localhost:7177/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{
+    "companyId": 1,
+    "username": "jdoe",
+    "password": "MyP@ssw0rd!"
+  }'
+```
+
+A successful response returns HTTP `200` with the following shape:
+
+```json
+{
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "mustChangePassword": false
+}
+```
+
+The `LoginResponse` DTO is defined as:
+
+```csharp
+public class LoginResponse
+{
+    public string Token { get; set; }
+    public bool MustChangePassword { get; set; }
+}
+```
+
+And the `LoginRequest` DTO accepted by the endpoint is:
+
+```csharp
+public class LoginRequest
+{
+    public int CompanyId { get; set; }
+    public string Username { get; set; }
+    public string Password { get; set; }
+}
+```
+
+<Tip>
+  To extract only the token value from the response in a shell script, pipe the output through a JSON parser: `TOKEN=$(... | jq -r '.token')`.
+</Tip>
+
+## Token lifetime
+
+Tokens are valid for **8 hours** from the moment of issuance. This is hardcoded in `JwtService.GenerateToken`:
+
+```csharp
+var token = new JwtSecurityToken(
+    issuer: issuer,
+    audience: issuer,
+    claims: claims,
+    expires: DateTime.UtcNow.AddHours(8),
+    signingCredentials: credentials
+);
+```
+
+After expiry, all requests using that token receive a `401` response. The client must log in again to obtain a new token. There is no refresh-token endpoint in the current API version.
+
+## Claims embedded in the token
+
+`JwtService` embeds three claims when generating a token:
+
+| Claim key | Type | Description |
+|---|---|---|
+| `userId` | `int` | The authenticated user's primary key in the database. |
+| `companyId` | `int` | The company the user belongs to. Used to scope all multi-tenant queries. |
+| `http://schemas.microsoft.com/ws/2008/06/identity/claims/role` | `string` (uppercase) | The user's role, e.g. `SUPER_ADMIN`, `ADMIN_GENERAL`, `GESTOR_SUPREMO`, `GESTOR`, or `CUSTOMER`. |
+
+The role claim uses the full Microsoft claim type URI (`ClaimTypes.Role`) so that ASP.NET Core's `[Authorize(Roles = "...")]` attribute resolves it correctly. `TokenValidationParameters` in `Program.cs` sets `RoleClaimType` to that URI explicitly.
+
+Controllers read these claims through the `BaseController` helpers:
+
+```csharp
+protected int GetUserId()    // reads "userId" claim
+protected int GetCompanyId() // reads "companyId" claim
+protected string GetUserRole() // reads ClaimTypes.Role
+```
+
+## Passing the token in requests
+
+Include the token as a Bearer credential in the `Authorization` HTTP header:
+
+```http
+Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+```
+
+Full curl example using a stored token:
+
+```bash
+# Store the token after login
+TOKEN=$(curl -s -X POST https://localhost:7177/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"companyId":1,"username":"jdoe","password":"MyP@ssw0rd!"}' \
+  | jq -r '.token')
+
+# Use the token in a subsequent request
+curl -s https://localhost:7177/api/auth/me \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+## Error responses
+
+### 401 — Token missing or invalid
+
+Returned when the `Authorization` header is absent, the token is malformed, the signature does not match, or the token has expired.
+
+```json
+{
+  "success": false,
+  "data": null,
+  "error": {
+    "code": 401,
+    "message": "Token inválido o no proporcionado"
+  }
+}
+```
+
+This response is produced by the `OnChallenge` event handler registered on `JwtBearerEvents` in `Program.cs`, not by a controller, so it is returned consistently before any controller code runs.
+
+### 403 — Insufficient role
+
+Returned when the token is valid but the user's role does not satisfy the `[Authorize(Roles = "...")]` requirement on the endpoint.
+
+```json
+{
+  "success": false,
+  "data": null,
+  "error": {
+    "code": 403,
+    "message": "No tienes permisos"
+  }
+}
+```
+
+This response is produced by the `OnForbidden` event handler on `JwtBearerEvents`.
+
+<Warning>
+  Both error responses are emitted as JSON with the correct `Content-Type: application/json` header. Do not attempt to parse them as plain text.
+</Warning>
+
+## The `mustChangePassword` flag
+
+When an internal user is created through `/api/auth/register/internal`, the system assigns a default password of `123456` and sets `MustChangePassword = true` in the database. The login endpoint reads that flag and includes it in the response.
+
+If `mustChangePassword` is `true`, the client **must** redirect the user to the change-password flow immediately. Attempting to call other API endpoints while this flag is active is not blocked at the HTTP layer, but it is enforced by business convention — the Angular portal and MAUI app both check this flag on login and prevent navigation to any other screen until the password is changed.
+
+<Steps>
+  <Step title="Detect the flag">
+    After a successful login, inspect `mustChangePassword` in the response JSON.
+  </Step>
+  <Step title="Prompt the user">
+    Show a change-password screen. Do not cache or display any other content until the password is updated.
+  </Step>
+  <Step title="Submit the new password">
+    `POST /api/auth/change-password` with the new password. The request must include the Bearer token obtained at login.
+  </Step>
+  <Step title="Resume normal flow">
+    Once the password is changed successfully, allow the user to proceed to the main application.
+  </Step>
+</Steps>
+
+## Password policy
+
+All passwords — including those set through `/api/auth/change-password` — are validated by `PasswordPolicy.IsValid()` before being accepted.
+
+```csharp
+public static bool IsValid(string? password)
+{
+    if (string.IsNullOrWhiteSpace(password) || password.Length < 8)
+        return false;
+
+    return password.Any(char.IsUpper)
+        && password.Any(char.IsLower)
+        && password.Any(char.IsDigit)
+        && password.Any(ch => !char.IsLetterOrDigit(ch));
+}
+```
+
+A valid password must satisfy **all** of the following rules:
+
+<CardGroup cols={2}>
+  <Card title="Minimum length" icon="ruler">
+    At least **8 characters** long.
+  </Card>
+  <Card title="Uppercase letter" icon="arrow-up">
+    At least **one uppercase** letter (A–Z).
+  </Card>
+  <Card title="Lowercase letter" icon="arrow-down">
+    At least **one lowercase** letter (a–z).
+  </Card>
+  <Card title="Digit" icon="hashtag">
+    At least **one numeric digit** (0–9).
+  </Card>
+  <Card title="Special character" icon="asterisk">
+    At least **one non-alphanumeric character** (e.g., `!`, `@`, `#`, `$`).
+  </Card>
+</CardGroup>
+
+If the new password does not meet these requirements, the API returns HTTP `400` with the validation message:
+
+```
+La contraseña debe tener mínimo 8 caracteres, una mayúscula, una minúscula, un número y un carácter especial.
+```
+
+<Note>
+  The JWT signing key is currently stored in `appsettings.json` under `Jwt:Key`. Before deploying to production, move this value to environment variables or a secrets manager to avoid exposing it in source control.
+</Note>

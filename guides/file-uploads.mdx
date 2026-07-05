@@ -1,0 +1,213 @@
+---
+title: "Upload files to ServiciosYa API: proofs, attachments, and invoices"
+sidebarTitle: "File Uploads"
+description: "How to upload payment proofs, optional service attachments, invoices, and delivery documents using the ServiciosYa API multipart endpoints."
+---
+
+The ServiciosYa API accepts file uploads at four distinct endpoints, each serving a different point in the service-request lifecycle. Files are saved to the `wwwroot/uploads/` directory on the server's local disk and served as static files. Every upload endpoint enforces a hard 10 MB limit and requires a valid Bearer token. The URL or path returned by each endpoint must be stored by the client and referenced in subsequent API calls.
+
+## Overview
+
+<CardGroup cols={2}>
+  <Card title="Payment Proof" icon="receipt">
+    Upload before creating a request. The returned `imageUrl` is required when calling `POST /api/servicerequests`.
+  </Card>
+  <Card title="Service Attachment" icon="paperclip">
+    Optional extra file attached to an existing request. Only allowed when the service has `PermiteAdjunto = 1`.
+  </Card>
+  <Card title="Invoice" icon="file-invoice">
+    Admin-only. Attach a PDF or image invoice to a completed or in-progress request.
+  </Card>
+  <Card title="Delivery Attachment" icon="truck">
+    Gestor-level and above. Attach proof of delivery (PDF, image, or WebP) to a request.
+  </Card>
+</CardGroup>
+
+<Warning>
+  All upload endpoints store files on the server's local disk under `wwwroot/uploads/`. In a horizontally scaled or containerised deployment this directory will not be shared between instances. For production environments with more than one API node, mount a shared volume or migrate file storage to an object-storage service (e.g. Azure Blob Storage, AWS S3) and update the path logic in `UploadsController` and `ServiceRequestsController`.
+</Warning>
+
+---
+
+## 1. Payment Proof Upload
+
+Every service request requires a payment proof image. Upload the image first, then pass the returned `imageUrl` to `POST /api/servicerequests`.
+
+| | |
+|---|---|
+| **Endpoint** | `POST /api/uploads/payment` |
+| **Auth** | Bearer token required (any authenticated role) |
+| **Content-Type** | `multipart/form-data` |
+| **Max size** | 10 MB |
+| **Accepted MIME types** | `image/jpeg`, `image/png`, `image/jpg` |
+| **Accepted extensions** | `.jpg`, `.jpeg`, `.png` |
+
+**Request**
+
+Send the file in a field named `file`:
+
+```bash
+curl -X POST https://api.example.com/api/uploads/payment \
+  -H "Authorization: Bearer <token>" \
+  -F "file=@/path/to/receipt.jpg"
+```
+
+**Response `200 OK`**
+
+```json
+{
+  "imageUrl": "https://api.example.com/uploads/a3f82c1d-9e4b-4d0a-b7e2-1234567890ab.jpg"
+}
+```
+
+<Note>
+  The file is renamed to a random UUID on disk. The original filename is not preserved in the URL but is captured in the PRO audit log (`OriginalFileName` change field).
+</Note>
+
+---
+
+## 2. Service Request Attachment
+
+After a service request has been created, an optional supplementary file can be attached. The service must have been configured with `PermiteAdjunto = 1`; attempting to attach a file to a request for a service without this flag will return `400` with the message `"Este servicio no permite adjuntos."`.
+
+| | |
+|---|---|
+| **Endpoint** | `POST /api/servicerequests/{id}/attachment` |
+| **Auth** | Bearer token required (any authenticated role) |
+| **Content-Type** | `multipart/form-data` |
+| **Max size** | 10 MB |
+| **Accepted types** | Any file type (no MIME restriction at the API layer) |
+
+**Request**
+
+```bash
+curl -X POST https://api.example.com/api/servicerequests/42/attachment \
+  -H "Authorization: Bearer <token>" \
+  -F "file=@/path/to/document.pdf"
+```
+
+**Response `200 OK`**
+
+```json
+{
+  "attachmentId": 123
+}
+```
+
+<Note>
+  Only one attachment is allowed per service request. A second upload attempt returns `400` with `"Ya existe un adjunto para esta solicitud."`.
+</Note>
+
+---
+
+## 3. Invoice Upload
+
+Administrators attach an invoice after a request has been processed. This endpoint is restricted to privileged roles.
+
+| | |
+|---|---|
+| **Endpoint** | `POST /api/servicerequests/{id}/invoice` |
+| **Auth** | `SUPER_ADMIN`, `ADMIN_GENERAL`, or `GESTOR_SUPREMO` |
+| **Content-Type** | `multipart/form-data` |
+| **Max size** | 10 MB |
+| **Accepted extensions** | `.pdf`, `.png`, `.jpg`, `.jpeg` |
+
+**Request**
+
+```bash
+curl -X POST https://api.example.com/api/servicerequests/42/invoice \
+  -H "Authorization: Bearer <token>" \
+  -F "file=@/path/to/invoice.pdf"
+```
+
+**Response `200 OK`**
+
+```json
+{
+  "invoiceUrl": "/uploads/service-requests/9b1c2e3a-4f5d-4a6b-8c7d-0e1f2a3b4c5d_invoice.pdf"
+}
+```
+
+The `invoiceUrl` is a root-relative path. Prefix it with the API base URL to build the full download link.
+
+---
+
+## 4. Delivery Attachment
+
+Gestores (and above) attach a delivery document once the service has been fulfilled — for example, a signed receipt or a photo of the completed work.
+
+| | |
+|---|---|
+| **Endpoint** | `POST /api/servicerequests/{id}/delivery-attachment` |
+| **Auth** | `SUPER_ADMIN`, `ADMIN_GENERAL`, `GESTOR_SUPREMO`, or `GESTOR` |
+| **Content-Type** | `multipart/form-data` |
+| **Max size** | 10 MB |
+| **Accepted extensions** | `.pdf`, `.png`, `.jpg`, `.jpeg`, `.webp` |
+
+**Request**
+
+```bash
+curl -X POST https://api.example.com/api/servicerequests/42/delivery-attachment \
+  -H "Authorization: Bearer <token>" \
+  -F "file=@/path/to/delivery-proof.webp"
+```
+
+**Response `200 OK`**
+
+```json
+{
+  "deliveryAttachmentUrl": "/uploads/service-requests/7d8e9f0a-1b2c-3d4e-5f6g-7h8i9j0k1l2m_delivery-proof.webp"
+}
+```
+
+---
+
+## Typical service-request file flow
+
+<Steps>
+  <Step title="Upload payment proof">
+    `POST /api/uploads/payment` → capture `imageUrl`.
+  </Step>
+  <Step title="Create service request">
+    `POST /api/servicerequests` with `imageUrl` in the body.
+  </Step>
+  <Step title="Attach optional document (if PermiteAdjunto = 1)">
+    `POST /api/servicerequests/{id}/attachment`.
+  </Step>
+  <Step title="Admin validates payment">
+    `PUT /api/servicerequests/{id}/payment`.
+  </Step>
+  <Step title="Admin attaches invoice (if required)">
+    `POST /api/servicerequests/{id}/invoice`.
+  </Step>
+  <Step title="Gestor attaches delivery proof">
+    `POST /api/servicerequests/{id}/delivery-attachment`.
+  </Step>
+</Steps>
+
+---
+
+## Error responses
+
+| HTTP Status | Cause |
+|---|---|
+| `400` | Missing file, file too large, unsupported MIME type or extension |
+| `400` | Service does not allow attachments (`PermiteAdjunto = 0`) |
+| `400` | Attachment already exists for this request |
+| `401` | Missing or invalid Bearer token |
+| `403` | Authenticated user's role is not permitted for this endpoint |
+
+---
+
+## Storage location
+
+Files are written to the following paths relative to `wwwroot/`:
+
+| Upload type | Directory |
+|---|---|
+| Payment proofs | `wwwroot/uploads/` |
+| Service attachments | `wwwroot/uploads/service-requests/` |
+| Invoices | `wwwroot/uploads/service-requests/` |
+| Delivery attachments | `wwwroot/uploads/service-requests/` |
+
+The directory is created automatically if it does not exist. Static-file middleware serves everything under `wwwroot/` at the root URL, so a file saved as `wwwroot/uploads/abc.jpg` is accessible at `https://host/uploads/abc.jpg`.

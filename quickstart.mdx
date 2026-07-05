@@ -1,47 +1,145 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Get started with ServiciosYa API in 5 steps"
+sidebarTitle: "Quickstart"
+description: "Learn how to run ServiciosYa API locally, run database migrations, obtain a JWT token, and make your first authenticated service catalog request."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
+This guide walks you from a fresh clone to a running API with a valid JWT token and a successful call to the service catalog. The whole process takes about ten minutes assuming SQL Server is already installed.
 
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
-
-## Prerequisites
-
-Before you begin, you must have:
-
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
-
-## Get started
+<Note>
+  Swagger UI is only available when `ASPNETCORE_ENVIRONMENT` is set to `Development`. It is intentionally disabled in Production to avoid exposing the API schema publicly.
+</Note>
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
+
+  <Step title="Prerequisites">
+    Before you begin, make sure the following are in place:
+
+    - **.NET 8 SDK** installed — verify with `dotnet --version` (must be `8.x`).
+    - **SQL Server** (Express or Developer edition) accessible at `.\SQLEXPRESS` with the `EncomiendasDB` database created. You can create the empty database in SSMS with:
+      ```sql
+      CREATE DATABASE EncomiendasDB;
+      ```
+    - **Git** to clone the repository.
+
+    Clone the backend repository and enter the project directory:
 
     ```bash
-    npm install your-package
+    git clone <repository-url> SERVICIOS-BACK
+    cd SERVICIOS-BACK
     ```
   </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
+
+  <Step title="Configure appsettings.json">
+    Open `appsettings.json` (or create `appsettings.Development.json` to override locally) and verify the connection string and JWT settings match your environment.
+
+    The defaults assume a local SQL Server Express instance:
+
+    ```json
+    {
+      "ConnectionStrings": {
+        "DefaultConnection": "Server=.\\SQLEXPRESS;Database=EncomiendasDB;Trusted_Connection=True;TrustServerCertificate=True"
+      },
+      "Jwt": {
+        "Key": "r9il4rb2SzYJuyKn7u+OJw/3wQ+et8jFUqCbEVXXNzk=",
+        "Issuer": "EncomiendasAPI"
+      }
+    }
+    ```
+
+    Adjust `Server=` if your SQL Server instance name differs (e.g., `Server=localhost` for a default instance or `Server=.\SQLSERVER2022` for a named one).
+
+    <Warning>
+      The `Jwt:Key` value shown above is the repository default and **must be replaced with a strong, randomly generated secret before deploying to any shared or production environment**. Anyone who knows this key can mint valid tokens for your API. See the [Configuration](/configuration) page for guidance on moving secrets out of the config file.
+    </Warning>
+  </Step>
+
+  <Step title="Run database migrations">
+    All schema objects and stored procedures live in the `Database/Migrations/` folder. Apply the SQL files **in date order** using SSMS or `sqlcmd`.
+
+    With `sqlcmd` (run from the repo root):
 
     ```bash
-    your-cli init
+    sqlcmd -S .\SQLEXPRESS -d EncomiendasDB -i "Database/Migrations/2026-04-20_auth_customer.sql"
+    sqlcmd -S .\SQLEXPRESS -d EncomiendasDB -i "Database/Migrations/2026-04-20_services_hardening.sql"
+    sqlcmd -S .\SQLEXPRESS -d EncomiendasDB -i "Database/Migrations/2026-04-21_company1_default_services.sql"
+    sqlcmd -S .\SQLEXPRESS -d EncomiendasDB -i "Database/Migrations/2026-04-21_internal_user_registration.sql"
+    sqlcmd -S .\SQLEXPRESS -d EncomiendasDB -i "Database/Migrations/2026-04-22_role_hierarchy.sql"
     ```
+
+    Order matters — later scripts depend on tables and procedures created by earlier ones. After all files have been applied without errors, the database is ready.
   </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
+
+  <Step title="Start the API">
+    From the project root, run:
 
     ```bash
-    your-cli start
+    dotnet run --launch-profile https
     ```
+
+    The API starts on two endpoints simultaneously:
+
+    | Protocol | URL |
+    |---|---|
+    | HTTPS | `https://localhost:7177` |
+    | HTTP | `http://localhost:5258` |
+
+    Once the console shows `Application started`, open Swagger UI in your browser:
+
+    ```
+    https://localhost:7177/swagger
+    ```
+
+    You will see all available controllers and endpoints. The Swagger definition includes the Bearer security scheme so you can authorize directly in the UI after obtaining a token in the next step.
+
+    If you need the API reachable from another device on your LAN (for example, when testing the Android app against a local server), use the `lan` launch profile instead:
+
+    ```bash
+    dotnet run --launch-profile lan
+    ```
+
+    This binds to `0.0.0.0:7177` and `0.0.0.0:5258`.
   </Step>
+
+  <Step title="Authenticate and make your first request">
+    ### Obtain a JWT token
+
+    Send a `POST` request to `/api/auth/login` with valid credentials:
+
+    ```bash
+    curl -X POST https://localhost:7177/api/auth/login \
+      -H 'Content-Type: application/json' \
+      -d '{"username":"admin@example.com","password":"YourPassword1!"}'
+    ```
+
+    A successful response returns the token and a flag that tells the client whether the user must change their password before proceeding:
+
+    ```json
+    {
+      "token": "eyJ...",
+      "mustChangePassword": false
+    }
+    ```
+
+    Copy the `token` value. Any internally created user has `mustChangePassword: true` on first login and must call `POST /api/auth/change-password` before other actions are permitted.
+
+    ### Fetch available services
+
+    Use the token as a Bearer credential to call the service catalog:
+
+    ```bash
+    curl https://localhost:7177/api/services/available \
+      -H 'Authorization: Bearer eyJ...'
+    ```
+
+    The response is a JSON array of active, non-deleted services visible to your company. Each service includes its name, description, price, estimated time, category, and whether it accepts an optional file attachment (`PermiteAdjunto`).
+
+    From here you can explore the full API surface:
+
+    - **Browse services by category** — `GET /api/services/by-category`
+    - **Create a service request** — first upload a payment voucher to `POST /api/uploads/payment`, then `POST /api/servicerequests` with the returned `imageUrl`
+    - **Track your requests** — `GET /api/servicerequests/my`
+    - **System health** (admin only, when `Diagnostics:EnableDiagnostics` is `true`) — `GET /api/v1/system/*`
+  </Step>
+
 </Steps>
-
-<Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
-
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
-</Tip>

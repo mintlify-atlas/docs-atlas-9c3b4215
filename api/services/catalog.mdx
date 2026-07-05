@@ -1,0 +1,366 @@
+---
+title: "Service catalog CRUD: create, update, toggle, and delete services"
+sidebarTitle: "Catalog"
+description: "Full CRUD endpoints for the ServiciosYa service catalog. Create, update, activate/deactivate, delete, and query services by category or search term."
+---
+
+The service catalog endpoints give admin roles complete control over what offerings appear in the ServiciosYa platform. Staff can create new services, update their details, toggle their visibility, and (for `SUPER_ADMIN`) logically delete them. Customers and admins use separate read endpoints: the admin listing exposes all services including inactive ones, while the customer-facing endpoint returns only active, non-deleted records. All endpoints are tenant-scoped — the `companyID` is resolved automatically from the authenticated user's JWT claims.
+
+---
+
+## POST /api/services
+
+Creates a new service in the company's catalog.
+
+**Required role:** `SUPER_ADMIN`, `ADMIN_GENERAL`, `GESTOR_SUPREMO`, or `GESTOR`
+
+### Request body
+
+<ParamField body="name" type="string" required>
+  Display name of the service. Must be a non-empty string.
+</ParamField>
+
+<ParamField body="description" type="string">
+  Optional free-text description shown to customers and staff.
+</ParamField>
+
+<ParamField body="referenceCode" type="string">
+  Optional internal reference or SKU code for the service.
+</ParamField>
+
+<ParamField body="price" type="decimal" required>
+  Customer-facing price in the company's currency. Use a numeric value (e.g. `1500.00`).
+</ParamField>
+
+<ParamField body="cost" type="decimal">
+  Optional internal cost for margin tracking. Not exposed to customers.
+</ParamField>
+
+<ParamField body="estimatedTimeText" type="string">
+  Human-readable turnaround estimate (e.g. `"2 a 3 días hábiles"`).
+</ParamField>
+
+<ParamField body="category" type="string" required>
+  Must be one of the valid category values. The API normalises common variations — see the [category normalisation note](#category-normalisation) below.
+
+  Accepted canonical values: `Escribania y legales`, `Presentacion de documentos`, `Pago de impuestos, patentes y otros`, `Traducciones legales`, `Delivery`, `Otros`.
+</ParamField>
+
+<ParamField body="permiteAdjunto" type="boolean">
+  When `true`, service requests for this service may include an optional file attachment beyond the payment voucher. Defaults to `false`.
+</ParamField>
+
+### Response
+
+Returns `200 OK` with the auto-generated service identifier.
+
+```json
+{
+  "serviceID": 42
+}
+```
+
+### Example
+
+```bash
+curl -X POST https://api.serviciosya.com/api/services \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Certificado de antecedentes penales",
+    "description": "Gestión y presentación del certificado ante el organismo correspondiente.",
+    "referenceCode": "CAP-001",
+    "price": 2500.00,
+    "cost": 800.00,
+    "estimatedTimeText": "3 a 5 días hábiles",
+    "category": "Presentacion de documentos",
+    "permiteAdjunto": true
+  }'
+```
+
+---
+
+## PUT /api/services/\{id\}
+
+Updates an existing service. All writable fields are replaced with the values supplied in the request body.
+
+**Required role:** `SUPER_ADMIN`, `ADMIN_GENERAL`, `GESTOR_SUPREMO`, or `GESTOR`
+
+### Path parameter
+
+<ParamField path="id" type="integer" required>
+  The `serviceID` of the service to update.
+</ParamField>
+
+### Request body
+
+The body accepts the same fields as [POST /api/services](#post-api-services) with the addition of `serviceID`, which must match the path parameter.
+
+<ParamField body="serviceID" type="integer" required>
+  Must equal the `{id}` path parameter. The API returns `400 Bad Request` if there is a mismatch.
+</ParamField>
+
+<ParamField body="name" type="string" required>
+  Updated display name.
+</ParamField>
+
+<ParamField body="description" type="string">
+  Updated description.
+</ParamField>
+
+<ParamField body="referenceCode" type="string">
+  Updated reference code.
+</ParamField>
+
+<ParamField body="price" type="decimal" required>
+  Updated customer-facing price.
+</ParamField>
+
+<ParamField body="cost" type="decimal">
+  Updated internal cost.
+</ParamField>
+
+<ParamField body="estimatedTimeText" type="string">
+  Updated estimated turnaround text.
+</ParamField>
+
+<ParamField body="category" type="string">
+  Updated category. Subject to the same normalisation rules as creation.
+</ParamField>
+
+<ParamField body="permiteAdjunto" type="boolean">
+  Updated attachment flag.
+</ParamField>
+
+### Response
+
+Returns `204 No Content` on success.
+
+Returns `400 Bad Request` if `serviceID` in the body does not match the `{id}` path parameter.
+
+---
+
+## PATCH /api/services/\{id\}/toggle
+
+Toggles the `isActive` flag of a service. An active service becomes inactive, and an inactive service becomes active.
+
+**Required role:** `SUPER_ADMIN`, `ADMIN_GENERAL`, `GESTOR_SUPREMO`, or `GESTOR`
+
+### Path parameter
+
+<ParamField path="id" type="integer" required>
+  The `serviceID` of the service to toggle.
+</ParamField>
+
+### Response
+
+Returns `204 No Content` on success.
+
+<Note>
+  Deactivating a service removes it from the customer-facing `GET /api/services/available` endpoint immediately. It does **not** affect any existing or in-progress service requests that reference it — those continue to show the service name and details from the time they were created.
+</Note>
+
+---
+
+## DELETE /api/services/\{id\}
+
+Performs a **logical deletion** of a service by setting `isDeleted = true`. The record is retained in the database but is excluded from all listings, including admin views.
+
+**Required role:** `SUPER_ADMIN` only
+
+<Warning>
+  Logical deletion is irreversible through the API. Once deleted, a service cannot be restored via any exposed endpoint. Only `SUPER_ADMIN` can perform this action.
+</Warning>
+
+### Path parameter
+
+<ParamField path="id" type="integer" required>
+  The `serviceID` of the service to delete.
+</ParamField>
+
+### Response
+
+Returns `204 No Content` on success.
+
+---
+
+## GET /api/services
+
+Returns a paginated list of services for admin use. Includes inactive services; excludes logically deleted ones.
+
+**Required role:** `SUPER_ADMIN`, `ADMIN_GENERAL`, `GESTOR_SUPREMO`, or `GESTOR`
+
+### Query parameters
+
+<ParamField query="pageNumber" type="integer">
+  Page index (1-based). Defaults to `1`.
+</ParamField>
+
+<ParamField query="pageSize" type="integer">
+  Number of records per page. Defaults to `10`.
+</ParamField>
+
+<ParamField query="search" type="string">
+  Optional free-text search applied against service name, description, and reference code.
+</ParamField>
+
+<ParamField query="onlyActive" type="boolean">
+  When `true`, filters the results to active services only. Omit or set to `false` to include inactive services.
+</ParamField>
+
+### Response
+
+Returns `200 OK` with a paginated result object containing an array of [ServiceResponse](#serviceresponse-shape) records.
+
+### Example
+
+```bash
+curl "https://api.serviciosya.com/api/services?pageNumber=1&pageSize=20&onlyActive=true&search=certificado" \
+  -H "Authorization: Bearer <token>"
+```
+
+---
+
+## GET /api/services/available
+
+Returns a paginated list of **active, non-deleted** services intended for customer browsing. This is the endpoint used by the Android app catalog screen.
+
+**Required role:** `SUPER_ADMIN`, `ADMIN_GENERAL`, `GESTOR_SUPREMO`, or `CUSTOMER`
+
+### Query parameters
+
+<ParamField query="pageNumber" type="integer">
+  Page index (1-based). Defaults to `1`.
+</ParamField>
+
+<ParamField query="pageSize" type="integer">
+  Number of records per page. Defaults to `100`.
+</ParamField>
+
+<ParamField query="search" type="string">
+  Optional free-text search applied against service name and description.
+</ParamField>
+
+<ParamField query="category" type="string">
+  Optional category filter. When provided, only services in the specified category are returned.
+</ParamField>
+
+### Response
+
+Returns `200 OK` with a paginated result object containing active [ServiceResponse](#serviceresponse-shape) records.
+
+<Note>
+  The default `pageSize` for this endpoint is `100` (versus `10` for the admin listing) to allow the mobile app to load the full catalog in a single request for offline browsing.
+</Note>
+
+---
+
+## GET /api/services/\{id\}
+
+Returns the full detail of a single service.
+
+**Required role:** `SUPER_ADMIN`, `ADMIN_GENERAL`, `GESTOR_SUPREMO`, `GESTOR`, or `CUSTOMER`
+
+### Path parameter
+
+<ParamField path="id" type="integer" required>
+  The `serviceID` to retrieve.
+</ParamField>
+
+### Response
+
+Returns `200 OK` with a [ServiceResponse](#serviceresponse-shape) object.
+
+Returns `404 Not Found` if the service does not exist or belongs to a different company.
+
+---
+
+## GET /api/services/by-category
+
+Returns all active, non-deleted services belonging to a specific category.
+
+**Required role:** `SUPER_ADMIN`, `ADMIN_GENERAL`, `GESTOR_SUPREMO`, or `CUSTOMER`
+
+### Query parameters
+
+<ParamField query="category" type="string" required>
+  The category to filter by. Must be a non-empty string. Returns `400 Bad Request` if omitted or blank.
+</ParamField>
+
+### Response
+
+Returns `200 OK` with an array of [ServiceResponse](#serviceresponse-shape) objects.
+
+Returns `400 Bad Request` if `category` is missing or blank.
+
+---
+
+## ServiceResponse shape
+
+The following fields are returned in service read responses.
+
+<ResponseField name="serviceID" type="integer">
+  Unique identifier of the service.
+</ResponseField>
+
+<ResponseField name="companyID" type="integer">
+  Tenant identifier.
+</ResponseField>
+
+<ResponseField name="name" type="string">
+  Display name of the service.
+</ResponseField>
+
+<ResponseField name="description" type="string">
+  Optional description.
+</ResponseField>
+
+<ResponseField name="referenceCode" type="string">
+  Optional internal reference code.
+</ResponseField>
+
+<ResponseField name="price" type="decimal">
+  Customer-facing price.
+</ResponseField>
+
+<ResponseField name="cost" type="decimal">
+  Optional internal cost.
+</ResponseField>
+
+<ResponseField name="estimatedTimeText" type="string">
+  Human-readable turnaround estimate.
+</ResponseField>
+
+<ResponseField name="category" type="string">
+  Normalised category value.
+</ResponseField>
+
+<ResponseField name="permiteAdjunto" type="boolean">
+  Whether requests for this service may include an optional attachment.
+</ResponseField>
+
+<ResponseField name="isActive" type="boolean">
+  Whether the service is currently active.
+</ResponseField>
+
+<ResponseField name="createdAt" type="string (ISO 8601)">
+  Timestamp of when the service was created.
+</ResponseField>
+
+---
+
+## Category normalisation
+
+<Note>
+  The API accepts several common shorthand or variant spellings and normalises them to the canonical category value before persisting. For example, sending `"LEGALES"` is accepted and stored as `"Escribania y legales"`. The following aliases are recognised:
+
+  | Alias accepted | Stored as |
+  |---|---|
+  | `LEGALES` | `Escribania y legales` |
+  | `DOCUMENTOS` | `Presentacion de documentos` |
+  | `COMPRAS` | `Pago de impuestos, patentes y otros` |
+  | `DELIVERYS` | `Delivery` |
+  | `OTHER` | `Otros` |
+
+  Any value that does not match a canonical category or a known alias will result in a validation error from the underlying stored procedure.
+</Note>

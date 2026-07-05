@@ -1,0 +1,262 @@
+---
+title: "Configure ServiciosYa API for your environment"
+sidebarTitle: "Configuration"
+description: "All appsettings.json sections explained: ConnectionStrings, Jwt, Email, PasswordReset, Diagnostics, and Versioning options with their defaults."
+---
+
+ServiciosYa API follows the standard ASP.NET Core configuration hierarchy: values in `appsettings.json` provide the baseline, `appsettings.{Environment}.json` overrides per environment (e.g. `appsettings.Production.json`), and environment variables override everything. This means you never need to modify the committed config file in production — you simply inject secrets as environment variables on the host or in your container orchestrator.
+
+<Tip>
+  Environment variable names mirror the JSON key path with double-underscore separators. For example, the connection string can be overridden without touching any file:
+
+  ```bash
+  export ConnectionStrings__DefaultConnection="Server=prod-sql;Database=EncomiendasDB;User Id=app_user;Password=secret;"
+  ```
+
+  This works on Linux, Windows, Docker, and most cloud hosting platforms.
+</Tip>
+
+---
+
+## ConnectionStrings
+
+<ParamField body="DefaultConnection" type="string" required>
+  The ADO.NET connection string passed to `Microsoft.Data.SqlClient` by `DbConnectionFactory`. All Dapper queries and stored-procedure calls use this single connection factory.
+
+  **Default (local development):**
+  ```
+  Server=.\SQLEXPRESS;Database=EncomiendasDB;Trusted_Connection=True;TrustServerCertificate=True
+  ```
+
+  - `Trusted_Connection=True` uses Windows Integrated Security — no username/password in the string.
+  - `TrustServerCertificate=True` bypasses SSL certificate validation, which is fine for a local Express instance but should be reviewed for production.
+</ParamField>
+
+**Production note:** Replace `Trusted_Connection=True` with an explicit SQL Server login or, on Azure, a managed identity connection string. Never commit production credentials to source control.
+
+---
+
+## Jwt
+
+JWT tokens are validated on every authenticated request. Both `ValidIssuer` and `ValidAudience` are set to the same `Jwt:Issuer` value, so the issuer string appears in all generated tokens and must match exactly on validation.
+
+<ParamField body="Key" type="string" required>
+  The symmetric HMAC-SHA256 signing key, Base64-encoded. The key must be long enough to satisfy the algorithm's minimum key size.
+
+  **Default:** `r9il4rb2SzYJuyKn7u+OJw/3wQ+et8jFUqCbEVXXNzk=`
+</ParamField>
+
+<ParamField body="Issuer" type="string" required>
+  The issuer string embedded in generated tokens and validated on every request. Also used as `ValidAudience`.
+
+  **Default:** `EncomiendasAPI`
+
+  The production `appsettings.Production.json` ships with `"Issuer": "TramiYaAPI"` — update this to reflect your actual production domain or service name.
+</ParamField>
+
+<Warning>
+  The `Jwt:Key` default value is stored in the public repository. **You must replace it with a freshly generated secret before any production or shared deployment.** The recommended approach is to remove the `Key` entry from all committed config files and inject it exclusively via an environment variable:
+
+  ```bash
+  export Jwt__Key="$(openssl rand -base64 32)"
+  ```
+
+  On Azure App Service use Application Settings; on AWS use Parameter Store or Secrets Manager; on Docker/Kubernetes use a secret mount.
+</Warning>
+
+---
+
+## Email
+
+The Email section controls the optional SMTP transport used for OTP password-reset notifications. When `Enabled` is `false` (the default), the `IPasswordResetNotificationService` is registered but does nothing — password-reset flows that require an OTP delivery will silently no-op.
+
+<ParamField body="Enabled" type="boolean">
+  Master switch for email delivery. Set to `true` to activate OTP password-reset emails. All other Email settings are ignored when this is `false`.
+
+  **Default:** `false`
+</ParamField>
+
+<ParamField body="Host" type="string">
+  SMTP server hostname (e.g. `smtp.sendgrid.net`, `smtp.office365.com`).
+
+  **Default:** `""` (empty)
+</ParamField>
+
+<ParamField body="Port" type="integer">
+  SMTP port. 587 is the standard submission port with STARTTLS.
+
+  **Default:** `587`
+</ParamField>
+
+<ParamField body="Username" type="string">
+  SMTP authentication username.
+
+  **Default:** `""` (empty)
+</ParamField>
+
+<ParamField body="Password" type="string">
+  SMTP authentication password. Store this in an environment variable or secrets manager — never commit a real password to `appsettings.json`.
+
+  **Default:** `""` (empty)
+</ParamField>
+
+<ParamField body="FromAddress" type="string">
+  The `From` email address for outgoing messages (e.g. `noreply@tramiya.com.py`).
+
+  **Default:** `""` (empty)
+</ParamField>
+
+<ParamField body="FromName" type="string">
+  The display name shown as the sender in email clients.
+
+  **Default:** `"ServiciosYa"`
+</ParamField>
+
+<ParamField body="EnableSsl" type="boolean">
+  Whether to use SSL/TLS for the SMTP connection. Should remain `true` for any real SMTP provider.
+
+  **Default:** `true`
+</ParamField>
+
+---
+
+## PasswordReset
+
+These settings govern the OTP-based password-reset flow: how long a code is valid, how many digits it has, and how many attempts or requests are allowed before the flow is locked out.
+
+<ParamField body="ExpirationMinutes" type="integer">
+  How long (in minutes) a generated OTP code remains valid. Clamped between **10 and 15** minutes.
+
+  **Default:** `10`
+</ParamField>
+
+<ParamField body="OtpDigits" type="integer">
+  Number of digits in the generated OTP code. Clamped between **6 and 8**.
+
+  **Default:** `6`
+</ParamField>
+
+<ParamField body="MaxAttempts" type="integer">
+  Maximum number of failed OTP verification attempts before the code is invalidated.
+
+  **Default:** `5`
+</ParamField>
+
+<ParamField body="MaxRequestsPerWindow" type="integer">
+  Maximum number of new OTP requests a user can make within the `RequestWindowMinutes` window, preventing abuse.
+
+  **Default:** `3`
+</ParamField>
+
+<ParamField body="RequestWindowMinutes" type="integer">
+  Duration (in minutes) of the sliding window used to count OTP requests against `MaxRequestsPerWindow`.
+
+  **Default:** `15`
+</ParamField>
+
+---
+
+## Diagnostics
+
+The Diagnostics section gates the entire `/api/v1/system/*` endpoint group. When `EnableDiagnostics` is `false`, all system endpoints return `404` regardless of the caller's role.
+
+<ParamField body="EnableDiagnostics" type="boolean">
+  Master switch for the `/api/v1/system/*` diagnostic endpoints (health, metrics, audit log queries).
+
+  **Default:** `true`
+</ParamField>
+
+<ParamField body="EnableDetailedErrors" type="boolean">
+  When `true`, error responses may include stack traces or internal details. Keep `false` in production to avoid leaking implementation details.
+
+  **Default:** `false`
+</ParamField>
+
+<ParamField body="AuditRetentionDays" type="integer">
+  How many days of audit log records are retained or surfaced by the diagnostics endpoints.
+
+  **Default:** `90`
+</ParamField>
+
+<ParamField body="MetricsWindowMinutes" type="integer">
+  The rolling time window (in minutes) used by the in-memory `ISystemMetricsService` when computing request-rate and error-rate metrics.
+
+  **Default:** `5`
+</ParamField>
+
+---
+
+## Versioning
+
+The Versioning section allows the API to communicate its own version and the minimum/recommended version of the Android APK to clients that call the version-check endpoint. This lets the mobile app prompt users to update without a forced update gate.
+
+<ParamField body="ApiVersion" type="string">
+  Semantic version string of the running API, returned in version-check responses.
+
+  **Default:** `"1.0.0"`
+</ParamField>
+
+<ParamField body="MinimumSupportedApkVersion" type="string">
+  The oldest APK version that is still compatible with this API. Clients below this version should be forced to update.
+
+  **Default:** `"1.0.0"`
+</ParamField>
+
+<ParamField body="RecommendedApkVersion" type="string">
+  The APK version recommended to users (typically the latest stable release). Clients below this version may receive a soft update prompt.
+
+  **Default:** `"1.0.0"`
+</ParamField>
+
+---
+
+## Production appsettings skeleton
+
+Use this skeleton as your `appsettings.Production.json`. Sensitive values are intentionally left as placeholder strings; supply them via environment variables so that no real secret is ever committed to the repository.
+
+```json
+{
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information",
+      "Microsoft.AspNetCore": "Warning"
+    }
+  },
+  "AllowedHosts": "api.tramiya.com.py",
+  "ConnectionStrings": {
+    "DefaultConnection": "__SET_VIA_ENV: ConnectionStrings__DefaultConnection__"
+  },
+  "Jwt": {
+    "Key": "__SET_VIA_ENV: Jwt__Key__",
+    "Issuer": "TramiYaAPI"
+  },
+  "Email": {
+    "Enabled": false,
+    "Host": "__SMTP_HOST__",
+    "Port": 587,
+    "Username": "__SMTP_USER__",
+    "Password": "__SET_VIA_ENV: Email__Password__",
+    "FromAddress": "__SMTP_FROM__",
+    "FromName": "TramiYa",
+    "EnableSsl": true
+  },
+  "PasswordReset": {
+    "ExpirationMinutes": 10,
+    "OtpDigits": 6,
+    "MaxAttempts": 5,
+    "MaxRequestsPerWindow": 3,
+    "RequestWindowMinutes": 15
+  },
+  "Diagnostics": {
+    "EnableDiagnostics": true,
+    "EnableDetailedErrors": false,
+    "AuditRetentionDays": 90,
+    "MetricsWindowMinutes": 5
+  },
+  "Versioning": {
+    "ApiVersion": "1.0.0",
+    "MinimumSupportedApkVersion": "1.0.0",
+    "RecommendedApkVersion": "1.0.0"
+  }
+}
+```

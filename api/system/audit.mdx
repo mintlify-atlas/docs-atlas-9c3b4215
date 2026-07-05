@@ -1,0 +1,565 @@
+---
+title: "Audit log API: query and manage the ServiciosYa audit trail"
+sidebarTitle: "Audit"
+description: "Five audit endpoints for SUPER_ADMIN and ADMIN_GENERAL to search events, retrieve details, hide/unhide records, and query the legacy audit log."
+---
+
+The ServiciosYa audit API surfaces two separate audit systems under a unified set of endpoints. The **legacy system** stores records in `dbo.InsertAuditLog` and is queried via the `dbo.GetAuditLogs` stored procedure; it tracks coarse entity-level changes as free-text old/new value strings. The **PRO system** writes structured events to `dbo.AuditEvents` with per-field change tracking in `dbo.AuditChanges`, rich metadata (module, action, severity, result, correlation ID, IP address), and visibility controls that allow `SUPER_ADMIN` to hide sensitive events from `ADMIN_GENERAL` users. When the PRO table is absent from the database, the PRO endpoints return empty results rather than errors, allowing zero-downtime migration.
+
+All audit endpoints are scoped to the caller's `CompanyID` claim so that `ADMIN_GENERAL` users can only see records belonging to their own company. `SUPER_ADMIN` users can query across all companies.
+
+---
+
+## Authentication
+
+| Endpoint | Required role |
+|----------|--------------|
+| `POST /api/audit/logs` | `SUPER_ADMIN` or `ADMIN_GENERAL` |
+| `POST /api/v1/audit/events/search` | `SUPER_ADMIN` or `ADMIN_GENERAL` |
+| `GET /api/v1/audit/events/{id}` | `SUPER_ADMIN` or `ADMIN_GENERAL` |
+| `POST /api/v1/audit/{id}/hide` | `SUPER_ADMIN` only |
+| `POST /api/v1/audit/{id}/unhide` | `SUPER_ADMIN` only |
+
+---
+
+## POST /api/audit/logs — Query legacy audit log
+
+Queries the legacy `dbo.GetAuditLogs` stored procedure and returns a paginated list of `AuditLogDto` records. Results are always filtered to the caller's `CompanyID`, which is read from the JWT claims and cannot be overridden by the request body.
+
+**Authentication:** `SUPER_ADMIN`, `ADMIN_GENERAL`  
+**Method:** `POST`  
+**Path:** `/api/audit/logs`  
+**Content-Type:** `application/json`
+
+### Request body
+
+<ParamField body="userID" type="integer" optional>
+  Filter by the internal user ID that performed the action.
+</ParamField>
+
+<ParamField body="actionType" type="string" optional>
+  Filter by the action type string stored in the legacy log (e.g. `"CREATE"`, `"UPDATE"`).
+</ParamField>
+
+<ParamField body="entityName" type="string" optional>
+  Filter by the entity type name (e.g. `"Service"`, `"ServiceRequest"`).
+</ParamField>
+
+<ParamField body="entityID" type="integer (int64)" optional>
+  Filter by the specific entity primary key.
+</ParamField>
+
+<ParamField body="dateFrom" type="string (ISO 8601)" optional>
+  Inclusive start of the date range filter (local server time).
+</ParamField>
+
+<ParamField body="dateTo" type="string (ISO 8601)" optional>
+  Inclusive end of the date range filter.
+</ParamField>
+
+<ParamField body="searchValue" type="string" optional>
+  Free-text search applied across available text fields by the stored procedure.
+</ParamField>
+
+<ParamField body="pageNumber" type="integer" default="1">
+  1-based page number. Values below `1` are treated as `1`.
+</ParamField>
+
+<ParamField body="pageSize" type="integer" default="50">
+  Records per page. Values below `1` or above `200` are clamped to `50`.
+</ParamField>
+
+### Response — 200 OK
+
+```json
+{
+  "success": true,
+  "data": {
+    "totalRows": 340,
+    "pageNumber": 1,
+    "pageSize": 50,
+    "data": [
+      {
+        "auditID": 1001,
+        "userID": 42,
+        "username": "jdoe@example.com",
+        "companyName": "Empresa Demo",
+        "actionType": "UPDATE",
+        "entityName": "Service",
+        "entityID": 77,
+        "oldValues": "{\"name\":\"Old Name\"}",
+        "newValues": "{\"name\":\"New Name\"}",
+        "iPAddress": "192.168.1.10",
+        "createdAt": "2026-04-30T09:15:00Z"
+      }
+    ]
+  }
+}
+```
+
+<ResponseField name="success" type="boolean">
+  Always `true` for a successful response.
+</ResponseField>
+
+<ResponseField name="data.totalRows" type="integer">
+  Total number of rows matching the filters (before pagination).
+</ResponseField>
+
+<ResponseField name="data.pageNumber" type="integer">
+  The effective page number used for this response.
+</ResponseField>
+
+<ResponseField name="data.pageSize" type="integer">
+  The effective page size used for this response.
+</ResponseField>
+
+<ResponseField name="data.data" type="array">
+  Array of legacy audit log records.
+</ResponseField>
+
+<ResponseField name="data.data[].auditID" type="integer (int64)">
+  Unique identifier of the legacy audit record.
+</ResponseField>
+
+<ResponseField name="data.data[].userID" type="integer">
+  ID of the user who performed the action.
+</ResponseField>
+
+<ResponseField name="data.data[].username" type="string | null">
+  Username looked up from `dbo.[User]`, enriched server-side.
+</ResponseField>
+
+<ResponseField name="data.data[].companyName" type="string | null">
+  Company name looked up from `dbo.Company`, enriched server-side.
+</ResponseField>
+
+<ResponseField name="data.data[].actionType" type="string">
+  The action type string stored in the legacy log.
+</ResponseField>
+
+<ResponseField name="data.data[].entityName" type="string">
+  The entity type that was affected.
+</ResponseField>
+
+<ResponseField name="data.data[].entityID" type="integer (int64)">
+  Primary key of the affected entity.
+</ResponseField>
+
+<ResponseField name="data.data[].oldValues" type="string">
+  JSON-serialised snapshot of the entity's fields before the action.
+</ResponseField>
+
+<ResponseField name="data.data[].newValues" type="string">
+  JSON-serialised snapshot of the entity's fields after the action.
+</ResponseField>
+
+<ResponseField name="data.data[].iPAddress" type="string">
+  IP address of the request that triggered the audit event.
+</ResponseField>
+
+<ResponseField name="data.data[].createdAt" type="string (ISO 8601)">
+  Timestamp when the audit record was written.
+</ResponseField>
+
+<Note>
+  Legacy audit records do **not** support hide/unhide, per-field change detail, severity levels, or correlation IDs. Those features are only available in the PRO audit system via `/api/v1/audit/events`.
+</Note>
+
+---
+
+## POST /api/v1/audit/events/search — Search PRO audit events
+
+Searches the `dbo.AuditEvents` table with a rich set of filters and returns paginated results. `ADMIN_GENERAL` callers automatically receive only events belonging to their company and only events where `IsVisibleForAdmins = 1` (i.e. not hidden by a `SUPER_ADMIN`). `SUPER_ADMIN` callers can query across all companies and see all events regardless of visibility.
+
+**Authentication:** `SUPER_ADMIN`, `ADMIN_GENERAL`  
+**Method:** `POST`  
+**Path:** `/api/v1/audit/events/search`  
+**Content-Type:** `application/json`
+
+### Request body
+
+<ParamField body="dateFromUtc" type="string (ISO 8601)" optional>
+  Filter events at or after this UTC timestamp.
+</ParamField>
+
+<ParamField body="dateToUtc" type="string (ISO 8601)" optional>
+  Filter events at or before this UTC timestamp.
+</ParamField>
+
+<ParamField body="userId" type="integer" optional>
+  Filter by the user who performed the action.
+</ParamField>
+
+<ParamField body="companyId" type="integer" optional>
+  Filter by company ID. `SUPER_ADMIN` only — ignored for `ADMIN_GENERAL` (their company is always enforced).
+</ParamField>
+
+<ParamField body="username" type="string" optional>
+  Partial match against `UserEmail` (SQL `LIKE '%value%'`).
+</ParamField>
+
+<ParamField body="companyName" type="string" optional>
+  Partial match against the company name from `dbo.Company`.
+</ParamField>
+
+<ParamField body="module" type="string" optional>
+  Exact match on the module name (e.g. `"AUTH"`, `"PAYMENTS"`). See the Actions reference table below.
+</ParamField>
+
+<ParamField body="action" type="string" optional>
+  Exact match on the action name (e.g. `"LOGIN"`, `"CREATE_SERVICE"`).
+</ParamField>
+
+<ParamField body="result" type="string" optional>
+  Exact match on the result field (e.g. `"Success"`, `"Failure"`).
+</ParamField>
+
+<ParamField body="severity" type="string" optional>
+  Exact match on the severity field (e.g. `"Info"`, `"Warning"`, `"Error"`, `"Critical"`).
+</ParamField>
+
+<ParamField body="isVisibleForAdmins" type="boolean" optional>
+  `SUPER_ADMIN` only. Filter by visibility flag. Pass `false` to retrieve hidden events.
+</ParamField>
+
+<ParamField body="correlationId" type="string (UUID)" optional>
+  Filter by the HTTP request correlation ID to find all events from a single request.
+</ParamField>
+
+<ParamField body="pageNumber" type="integer" default="1">
+  1-based page number.
+</ParamField>
+
+<ParamField body="pageSize" type="integer" default="50">
+  Records per page. Maximum allowed value is `200`.
+</ParamField>
+
+### Response — 200 OK
+
+```json
+{
+  "totalRows": 1204,
+  "pageNumber": 1,
+  "pageSize": 50,
+  "data": [
+    {
+      "id": 9871,
+      "timestampUtc": "2026-05-01T11:47:03Z",
+      "userId": 42,
+      "userEmail": "jdoe@example.com",
+      "role": "ADMIN_GENERAL",
+      "companyId": 7,
+      "companyName": "Empresa Demo",
+      "action": "VALIDATE_PAYMENT",
+      "module": "PAYMENTS",
+      "entityName": "Payment",
+      "entityId": "4402",
+      "correlationId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+      "ipAddress": "192.168.1.10",
+      "userAgent": "Mozilla/5.0 ...",
+      "result": "Success",
+      "severity": "Info",
+      "message": "Pago validado correctamente.",
+      "isVisibleForAdmins": true,
+      "hiddenByUserId": null,
+      "hiddenAtUtc": null
+    }
+  ]
+}
+```
+
+<ResponseField name="totalRows" type="integer">
+  Total matching records before pagination.
+</ResponseField>
+
+<ResponseField name="pageNumber" type="integer">
+  Effective page number.
+</ResponseField>
+
+<ResponseField name="pageSize" type="integer">
+  Effective page size.
+</ResponseField>
+
+<ResponseField name="data" type="array">
+  Page of `AuditEventDto` records. See the [AuditEvent fields reference](#auditevent-fields-reference) below.
+</ResponseField>
+
+### Example
+
+```bash
+curl -s https://api.serviciosya.com/api/v1/audit/events/search \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "module": "AUTH",
+    "severity": "Warning",
+    "dateFromUtc": "2026-05-01T00:00:00Z",
+    "dateToUtc":   "2026-05-01T23:59:59Z",
+    "pageNumber": 1,
+    "pageSize": 25
+  }' | jq '.totalRows'
+```
+
+---
+
+## GET /api/v1/audit/events/{id} — Get single audit event
+
+Retrieves the full detail of a single PRO audit event, including all field-level changes recorded in `dbo.AuditChanges`. Access is restricted to the caller's company for `ADMIN_GENERAL`. Returns `404` if the event does not exist, belongs to a different company, or is hidden from the caller's role.
+
+**Authentication:** `SUPER_ADMIN`, `ADMIN_GENERAL`  
+**Method:** `GET`  
+**Path:** `/api/v1/audit/events/{id}`
+
+### Path parameters
+
+<ParamField path="id" type="integer (int64)" required>
+  The unique ID of the audit event to retrieve.
+</ParamField>
+
+### Response — 200 OK
+
+```json
+{
+  "id": 9871,
+  "timestampUtc": "2026-05-01T11:47:03Z",
+  "userId": 42,
+  "userEmail": "jdoe@example.com",
+  "role": "ADMIN_GENERAL",
+  "companyId": 7,
+  "companyName": "Empresa Demo",
+  "action": "UPDATE_SERVICE",
+  "module": "SERVICES",
+  "entityName": "Service",
+  "entityId": "77",
+  "correlationId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "ipAddress": "192.168.1.10",
+  "userAgent": "Mozilla/5.0 ...",
+  "result": "Success",
+  "severity": "Info",
+  "message": "Servicio actualizado.",
+  "isVisibleForAdmins": true,
+  "hiddenByUserId": null,
+  "hiddenAtUtc": null,
+  "changes": [
+    {
+      "id": 501,
+      "auditEventId": 9871,
+      "fieldName": "Name",
+      "oldValue": "Old Service Name",
+      "newValue": "New Service Name"
+    }
+  ]
+}
+```
+
+### Response — 404 Not Found
+
+Returned when the event does not exist, is outside the caller's company scope, or (for `ADMIN_GENERAL`) has been hidden by a `SUPER_ADMIN`.
+
+### Example
+
+```bash
+curl -s https://api.serviciosya.com/api/v1/audit/events/9871 \
+  -H "Authorization: Bearer <token>" | jq '.changes'
+```
+
+---
+
+## POST /api/v1/audit/{id}/hide — Hide an audit event
+
+Marks an audit event as hidden by setting `IsVisibleForAdmins = false`, recording the acting user's ID in `HiddenByUserId` and the timestamp in `HiddenAtUtc`. Hidden events remain fully visible to `SUPER_ADMIN` but are excluded from all results returned to `ADMIN_GENERAL`. The hide action itself is written to the audit log as a `HIDE_AUDIT_EVENT` event with `Severity = "Warning"`.
+
+**Authentication:** `SUPER_ADMIN` only  
+**Method:** `POST`  
+**Path:** `/api/v1/audit/{id}/hide`
+
+### Path parameters
+
+<ParamField path="id" type="integer (int64)" required>
+  The unique ID of the audit event to hide.
+</ParamField>
+
+### Response — 200 OK
+
+```json
+{ "message": "Evento ocultado." }
+```
+
+### Response — 404 Not Found
+
+Returned when the event does not exist or the update affected zero rows.
+
+---
+
+## POST /api/v1/audit/{id}/unhide — Restore a hidden event
+
+Reverses a previous hide by setting `IsVisibleForAdmins = true` and clearing `HiddenByUserId` and `HiddenAtUtc`. The action is written to the audit log as an `UNHIDE_AUDIT_EVENT` event with `Severity = "Info"`. After a successful unhide, `ADMIN_GENERAL` users will once again see the event in search results.
+
+**Authentication:** `SUPER_ADMIN` only  
+**Method:** `POST`  
+**Path:** `/api/v1/audit/{id}/unhide`
+
+### Path parameters
+
+<ParamField path="id" type="integer (int64)" required>
+  The unique ID of the audit event to restore.
+</ParamField>
+
+### Response — 200 OK
+
+```json
+{ "message": "Evento restaurado." }
+```
+
+### Response — 404 Not Found
+
+Returned when the event does not exist or the update affected zero rows.
+
+---
+
+## AuditEvent fields reference
+
+The following fields appear in both the search results (`AuditEventDto`) and the detail response (`AuditEventDetailDto`).
+
+<ResponseField name="id" type="integer (int64)">
+  Unique identifier of the audit event in `dbo.AuditEvents`.
+</ResponseField>
+
+<ResponseField name="timestampUtc" type="string (ISO 8601)">
+  UTC timestamp when the event was written.
+</ResponseField>
+
+<ResponseField name="userId" type="integer | null">
+  ID of the user who triggered the event. `null` for system-generated events.
+</ResponseField>
+
+<ResponseField name="userEmail" type="string | null">
+  Email address of the acting user at the time of the event.
+</ResponseField>
+
+<ResponseField name="role" type="string | null">
+  JWT role claim of the acting user (e.g. `"ADMIN_GENERAL"`, `"SUPER_ADMIN"`).
+</ResponseField>
+
+<ResponseField name="companyId" type="integer | null">
+  Company the acting user belonged to.
+</ResponseField>
+
+<ResponseField name="companyName" type="string | null">
+  Human-readable company name, joined from `dbo.Company`.
+</ResponseField>
+
+<ResponseField name="action" type="string">
+  The action that was performed (e.g. `"LOGIN"`, `"CREATE_SERVICE"`). See the actions table below.
+</ResponseField>
+
+<ResponseField name="module" type="string">
+  Functional module that generated the event (e.g. `"AUTH"`, `"SERVICES"`).
+</ResponseField>
+
+<ResponseField name="entityName" type="string | null">
+  The entity type affected (e.g. `"Service"`, `"Payment"`).
+</ResponseField>
+
+<ResponseField name="entityId" type="string | null">
+  String representation of the entity's primary key.
+</ResponseField>
+
+<ResponseField name="correlationId" type="string (UUID)">
+  HTTP request correlation ID, shared by all audit events generated within the same request.
+</ResponseField>
+
+<ResponseField name="ipAddress" type="string | null">
+  Client IP address of the originating request.
+</ResponseField>
+
+<ResponseField name="userAgent" type="string | null">
+  `User-Agent` header from the originating request.
+</ResponseField>
+
+<ResponseField name="result" type="string">
+  Outcome of the action. Typical values: `"Success"`, `"Failure"`.
+</ResponseField>
+
+<ResponseField name="severity" type="string">
+  Severity level: `"Info"`, `"Warning"`, `"Error"`, or `"Critical"`.
+</ResponseField>
+
+<ResponseField name="message" type="string | null">
+  Free-text description of the event, written by the application layer.
+</ResponseField>
+
+<ResponseField name="isVisibleForAdmins" type="boolean">
+  `true` if the event is visible to `ADMIN_GENERAL` users. `SUPER_ADMIN` always sees all events regardless of this flag.
+</ResponseField>
+
+<ResponseField name="hiddenByUserId" type="integer | null">
+  ID of the `SUPER_ADMIN` who hid this event, or `null` if not hidden.
+</ResponseField>
+
+<ResponseField name="hiddenAtUtc" type="string (ISO 8601) | null">
+  UTC timestamp when the event was hidden, or `null` if not hidden.
+</ResponseField>
+
+<ResponseField name="changes" type="array">
+  *(Detail endpoint only.)* List of `AuditChangeDto` records describing per-field mutations.
+</ResponseField>
+
+<ResponseField name="changes[].id" type="integer (int64)">
+  Unique ID of the change record in `dbo.AuditChanges`.
+</ResponseField>
+
+<ResponseField name="changes[].auditEventId" type="integer (int64)">
+  Foreign key back to `dbo.AuditEvents.Id`.
+</ResponseField>
+
+<ResponseField name="changes[].fieldName" type="string">
+  Name of the model property that changed.
+</ResponseField>
+
+<ResponseField name="changes[].oldValue" type="string | null">
+  String representation of the value before the change.
+</ResponseField>
+
+<ResponseField name="changes[].newValue" type="string | null">
+  String representation of the value after the change.
+</ResponseField>
+
+---
+
+## Audit actions by module
+
+The following table documents every action string that ServiciosYa writes to `dbo.AuditEvents`.
+
+| Module | Action | Severity (typical) | Description |
+|--------|--------|--------------------|-------------|
+| `AUTH` | `LOGIN` | Info | Successful user authentication. |
+| `AUTH` | `REGISTER_CUSTOMER` | Info | New customer portal account created. |
+| `AUTH` | `REGISTER_INTERNAL` | Info | New internal/staff account created. |
+| `AUTH` | `CHANGE_PASSWORD` | Warning | User password changed. |
+| `AUTH` | `DELETE_PORTAL_USER` | Warning | Portal user account deleted. |
+| `SERVICES` | `CREATE_SERVICE` | Info | New service catalogue entry created. |
+| `SERVICES` | `UPDATE_SERVICE` | Info | Existing service updated. |
+| `SERVICES` | `TOGGLE_SERVICE` | Info | Service enabled or disabled. |
+| `SERVICES` | `DELETE_SERVICE` | Warning | Service catalogue entry deleted. |
+| `SERVICE_REQUESTS` | `CREATE_SERVICE_REQUEST` | Info | New service request submitted. |
+| `SERVICE_REQUESTS` | `UPDATE_REQUEST_STATUS` | Info | Service request status changed. |
+| `SERVICE_REQUESTS` | `UPLOAD_ATTACHMENT` | Info | Attachment uploaded to a service request. |
+| `SERVICE_REQUESTS` | `UPLOAD_INVOICE` | Info | Invoice uploaded to a service request. |
+| `SERVICE_REQUESTS` | `UPLOAD_DELIVERY_ATTACHMENT` | Info | Delivery attachment uploaded. |
+| `SERVICE_REQUESTS` | `RESOLVE_CANCELLATION_REMINDER` | Info | Cancellation reminder resolved. |
+| `SERVICE_REQUESTS` | `DELETE_SERVICE_REQUEST` | Warning | Service request deleted. |
+| `PAYMENTS` | `VALIDATE_PAYMENT` | Info | Payment proof validated and accepted. |
+| `PAYMENTS` | `REJECT_PAYMENT` | Warning | Payment proof rejected. |
+| `PAYMENTS` | `CONFIRM_REFUND` | Warning | Refund confirmed for a payment. |
+| `UPLOADS` | `UPLOAD_PAYMENT_PROOF` | Info | Payment proof file uploaded. |
+| `AUDIT` | `HIDE_AUDIT_EVENT` | Warning | A `SUPER_ADMIN` hid an audit event. |
+| `AUDIT` | `UNHIDE_AUDIT_EVENT` | Info | A `SUPER_ADMIN` restored a hidden audit event. |
+
+---
+
+## Audit write behaviour
+
+<Note>
+  Audit events are written via `IAuditEventService.TryWriteAsync`. This method is fire-and-forget by design: it catches and swallows all exceptions so that an audit write failure **never** causes a user-facing operation to fail or return an error. If the `dbo.AuditEvents` table does not exist, writes silently no-op. Check application logs for `[AuditEventService]`-prefixed warning messages if events appear to be missing.
+</Note>

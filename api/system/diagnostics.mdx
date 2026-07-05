@@ -1,0 +1,297 @@
+---
+title: "System diagnostics: status, metrics, and resource snapshots"
+sidebarTitle: "Diagnostics"
+description: "Three SUPER_ADMIN-only endpoints under /api/v1/system: server status with uptime, request metrics snapshot, and process resource usage."
+---
+
+The system diagnostics endpoints give `SUPER_ADMIN` operators a real-time view into the running API process: server identity and uptime, in-memory request metrics, live process resource usage, and a feed of recent error events pulled from the PRO audit log. All four endpoints live under `/api/v1/system`, require a valid JWT issued to a `SUPER_ADMIN` account, and will return `500` with the message `"Diagnostico deshabilitado."` if `Diagnostics:EnableDiagnostics` is set to `false` in application configuration.
+
+<Warning>
+  Keep `Diagnostics:EnableDiagnostics` set to `false` in production unless you are actively monitoring the system. These endpoints expose process internals — CPU usage, memory, thread counts, and error details — that should not be accessible to unintended callers even with role enforcement in place.
+</Warning>
+
+---
+
+## Authentication
+
+All four endpoints require a Bearer token for a user with the `SUPER_ADMIN` role.
+
+```bash
+-H "Authorization: Bearer <token>"
+```
+
+If the token is missing or the role is wrong, the API returns `401 Unauthorized` or `403 Forbidden` before the diagnostics check runs.
+
+---
+
+## Configuration
+
+The diagnostics feature is controlled by the `Diagnostics` section of `appsettings.json`:
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `EnableDiagnostics` | bool | `true` | Master switch. Set to `false` to disable all `/api/v1/system` endpoints. |
+| `EnableDetailedErrors` | bool | `false` | Whether to include stack traces in error responses. |
+| `AuditRetentionDays` | int | `90` | How many days of audit events to retain. |
+| `MetricsWindowMinutes` | int | `5` | Rolling window used by the metrics snapshot (see below). |
+
+---
+
+## GET /api/v1/system/status — Server status
+
+Returns the current server identity, the result of the readiness check (same logic as `/health/ready`), the environment name, the assembly version, and the total process uptime in seconds. The uptime counter starts from the moment the process first handled a request, not from OS boot time.
+
+**Authentication:** `SUPER_ADMIN`  
+**Method:** `GET`  
+**Path:** `/api/v1/system/status`
+
+### Response — 200 OK
+
+```json
+{
+  "status": "OK",
+  "environment": "Production",
+  "apiVersion": "1.0.0",
+  "serverTimeUtc": "2026-05-01T12:00:00Z",
+  "uptimeSeconds": 86400.512
+}
+```
+
+<ResponseField name="status" type="string">
+  Result of the internal readiness check. Same possible values as `/health/ready`: `"OK"`, `"Warning"`, or `"Error"`.
+</ResponseField>
+
+<ResponseField name="environment" type="string">
+  ASP.NET Core environment name as set by the `ASPNETCORE_ENVIRONMENT` variable, e.g. `"Production"` or `"Development"`.
+</ResponseField>
+
+<ResponseField name="apiVersion" type="string">
+  The assembly version of the running API binary, e.g. `"1.0.0"`. Falls back to `"1.0.0"` if the version attribute is absent.
+</ResponseField>
+
+<ResponseField name="serverTimeUtc" type="string (ISO 8601)">
+  The server's current UTC clock at response time.
+</ResponseField>
+
+<ResponseField name="uptimeSeconds" type="number">
+  Fractional seconds elapsed since the `SystemController` static initializer ran (proxy for process start time).
+</ResponseField>
+
+### Example
+
+```bash
+curl -s https://api.serviciosya.com/api/v1/system/status \
+  -H "Authorization: Bearer <token>" | jq .
+```
+
+---
+
+## GET /api/v1/system/metrics — Request metrics snapshot
+
+Returns a snapshot of in-memory request counters and response-time statistics computed over the rolling `MetricsWindowMinutes` window (default 5 minutes). Counters are maintained by `InMemorySystemMetricsService`, which is updated by a middleware layer that wraps every request. The snapshot is computed lazily on demand and reflects only requests processed since the last application restart.
+
+**Authentication:** `SUPER_ADMIN`  
+**Method:** `GET`  
+**Path:** `/api/v1/system/metrics`
+
+### Response — 200 OK
+
+```json
+{
+  "requestsTotal": 14823,
+  "requestsPerMinute": 47,
+  "avgResponseTimeMs": 112.34,
+  "errorRate": 2.15,
+  "activeRequests": 3,
+  "topEndpoints": [
+    { "endpoint": "/api/v1/service-requests", "count": 312 },
+    { "endpoint": "/api/v1/services",          "count": 205 }
+  ],
+  "windowStartedUtc": "2026-05-01T11:55:00Z",
+  "windowEndedUtc":   "2026-05-01T12:00:00Z"
+}
+```
+
+<ResponseField name="requestsTotal" type="integer">
+  Cumulative count of all requests completed since the process started. Never resets without a restart.
+</ResponseField>
+
+<ResponseField name="requestsPerMinute" type="integer">
+  Number of requests completed in the last 60 seconds at the moment of the snapshot.
+</ResponseField>
+
+<ResponseField name="avgResponseTimeMs" type="number">
+  Mean response time in milliseconds across all requests within the metrics window, rounded to 2 decimal places.
+</ResponseField>
+
+<ResponseField name="errorRate" type="number">
+  Percentage of requests within the window that returned HTTP status `>= 400`, rounded to 2 decimal places. For example, `2.15` means 2.15 % of requests errored.
+</ResponseField>
+
+<ResponseField name="activeRequests" type="integer">
+  Number of requests currently being processed (in-flight) at the moment of the snapshot.
+</ResponseField>
+
+<ResponseField name="topEndpoints" type="array">
+  Up to 5 most-called endpoints within the window, ordered by descending request count.
+</ResponseField>
+
+<ResponseField name="topEndpoints[].endpoint" type="string">
+  The request path as tracked by the middleware, e.g. `"/api/v1/service-requests"`.
+</ResponseField>
+
+<ResponseField name="topEndpoints[].count" type="integer">
+  Number of times this endpoint was called within the window.
+</ResponseField>
+
+<ResponseField name="windowStartedUtc" type="string (ISO 8601)">
+  Start boundary of the rolling metrics window (`now − MetricsWindowMinutes`).
+</ResponseField>
+
+<ResponseField name="windowEndedUtc" type="string (ISO 8601)">
+  End boundary of the rolling metrics window (the moment the snapshot was taken).
+</ResponseField>
+
+### Example
+
+```bash
+curl -s https://api.serviciosya.com/api/v1/system/metrics \
+  -H "Authorization: Bearer <token>" | jq '{errorRate, avgResponseTimeMs, activeRequests}'
+```
+
+---
+
+## GET /api/v1/system/resources — Process resource usage
+
+Returns a point-in-time snapshot of the current process's memory consumption, CPU utilisation, thread count, and .NET GC collection counts. CPU percentage is computed by comparing `Process.TotalProcessorTime` across two successive calls and normalising by wall-clock elapsed time and logical CPU count. Consecutive rapid calls may therefore report `0` CPU if the elapsed interval is too short.
+
+**Authentication:** `SUPER_ADMIN`  
+**Method:** `GET`  
+**Path:** `/api/v1/system/resources`
+
+### Response — 200 OK
+
+```json
+{
+  "cpuPercent": 3.47,
+  "memoryUsedMb": 184.22,
+  "threadCount": 28,
+  "gen0Collections": 512,
+  "gen1Collections": 43,
+  "gen2Collections": 2
+}
+```
+
+<ResponseField name="cpuPercent" type="number">
+  Estimated CPU utilisation as a percentage (0–100), rounded to 2 decimal places. Computed from `Process.TotalProcessorTime` delta since the previous snapshot call.
+</ResponseField>
+
+<ResponseField name="memoryUsedMb" type="number">
+  Process working set in megabytes (`Process.WorkingSet64 / 1024 / 1024`), rounded to 2 decimal places.
+</ResponseField>
+
+<ResponseField name="threadCount" type="integer">
+  Number of OS threads currently owned by the process (`Process.Threads.Count`).
+</ResponseField>
+
+<ResponseField name="gen0Collections" type="integer">
+  Total Gen-0 garbage collections since process start (`GC.CollectionCount(0)`).
+</ResponseField>
+
+<ResponseField name="gen1Collections" type="integer">
+  Total Gen-1 garbage collections since process start.
+</ResponseField>
+
+<ResponseField name="gen2Collections" type="integer">
+  Total Gen-2 (full) garbage collections since process start. A high or rapidly increasing value may indicate memory pressure.
+</ResponseField>
+
+### Example
+
+```bash
+curl -s https://api.serviciosya.com/api/v1/system/resources \
+  -H "Authorization: Bearer <token>" | jq '{cpuPercent, memoryUsedMb, threadCount}'
+```
+
+---
+
+## GET /api/v1/system/errors — Recent error events
+
+Returns the most recent audit events whose `Severity` is `"Error"` or `"Critical"`, drawn from the PRO `dbo.AuditEvents` table. If the `AuditEvents` table does not yet exist in the database, the endpoint returns an empty array rather than an error. Results are ordered by `TimestampUtc DESC`, then by `Id DESC`.
+
+**Authentication:** `SUPER_ADMIN`  
+**Method:** `GET`  
+**Path:** `/api/v1/system/errors`
+
+### Query parameters
+
+<ParamField query="limit" type="integer" default="50">
+  Maximum number of error records to return. Values less than or equal to `0` are treated as `50`. The server-side cap is `200`; any value above that is clamped to `200`.
+</ParamField>
+
+### Response — 200 OK
+
+```json
+[
+  {
+    "id": 9871,
+    "timestampUtc": "2026-05-01T11:47:03Z",
+    "module": "PAYMENTS",
+    "action": "VALIDATE_PAYMENT",
+    "severity": "Error",
+    "result": "Failure",
+    "entityName": "Payment",
+    "entityId": "4402",
+    "correlationId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+    "message": "Pago no encontrado."
+  }
+]
+```
+
+<ResponseField name="id" type="integer (int64)">
+  Unique identifier of the audit event.
+</ResponseField>
+
+<ResponseField name="timestampUtc" type="string (ISO 8601)">
+  When the event was recorded.
+</ResponseField>
+
+<ResponseField name="module" type="string">
+  Functional module that generated the error (e.g. `"PAYMENTS"`, `"AUTH"`).
+</ResponseField>
+
+<ResponseField name="action" type="string">
+  Specific action that failed (e.g. `"VALIDATE_PAYMENT"`).
+</ResponseField>
+
+<ResponseField name="severity" type="string">
+  Always `"Error"` or `"Critical"` for results returned by this endpoint.
+</ResponseField>
+
+<ResponseField name="result" type="string">
+  Outcome recorded at the time of the event (e.g. `"Failure"`).
+</ResponseField>
+
+<ResponseField name="entityName" type="string | null">
+  The entity type affected, if recorded (e.g. `"Payment"`).
+</ResponseField>
+
+<ResponseField name="entityId" type="string | null">
+  The entity's primary key, if recorded.
+</ResponseField>
+
+<ResponseField name="correlationId" type="string (UUID)">
+  The correlation ID of the originating HTTP request, useful for cross-referencing application logs.
+</ResponseField>
+
+<ResponseField name="message" type="string | null">
+  Human-readable error summary as recorded in the audit event.
+</ResponseField>
+
+### Example
+
+```bash
+# Return the 20 most recent critical/error events
+curl -s "https://api.serviciosya.com/api/v1/system/errors?limit=20" \
+  -H "Authorization: Bearer <token>" | jq '.[].message'
+```

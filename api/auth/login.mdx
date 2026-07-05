@@ -1,0 +1,96 @@
+---
+title: "POST /api/auth/login — Authenticate and obtain a JWT token"
+sidebarTitle: "Login"
+description: "Authenticate a user with username and password. Returns a signed JWT token and a flag indicating whether the user must change their password."
+---
+
+The login endpoint validates a username and password against the ServiciosYa database, issues a signed JWT token on success, and writes an audit event regardless of whether the attempt succeeds or fails. All subsequent authenticated requests must carry this token in the `Authorization: Bearer <token>` header.
+
+## Endpoint
+
+| Method | URL |
+|--------|-----|
+| `POST` | `/api/auth/login` |
+| `POST` | `/api/v1/auth/login` |
+
+**Authentication:** None — public endpoint.
+
+---
+
+## Request body
+
+<ParamField body="username" type="string" required>
+  The user's login username. Typically an email address but the field is treated as a free-form identifier scoped to the company.
+</ParamField>
+
+<ParamField body="password" type="string" required>
+  The user's current password. Passwords are compared using a SHA-256 hash stored in the database.
+</ParamField>
+
+---
+
+## Response fields
+
+A successful `200 OK` response returns a JSON object with the following fields.
+
+<ResponseField name="token" type="string">
+  A signed JWT Bearer token. Pass this value in the `Authorization: Bearer <token>` header on every subsequent authenticated request. The token embeds the claims listed below.
+</ResponseField>
+
+<ResponseField name="mustChangePassword" type="boolean">
+  When `true`, the user is required to call [`POST /api/auth/change-password`](/api/auth/password#post-api-auth-change-password) before any other operation is permitted. This flag is set for all users created through the internal registration flow, whose initial password is `123456`.
+</ResponseField>
+
+### JWT claims
+
+The generated token includes the following claims:
+
+| Claim | Description |
+|-------|-------------|
+| `userId` | Numeric ID of the authenticated user |
+| `companyId` | Numeric ID of the user's company |
+| `role` | User role, using the Microsoft role claim type (`http://schemas.microsoft.com/ws/2008/06/identity/claims/role`) |
+
+---
+
+## Example request
+
+```bash
+curl -X POST https://localhost:7177/api/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username": "admin@example.com", "password": "MyPassword1!"}'
+```
+
+## Example response
+
+```json
+{
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "mustChangePassword": false
+}
+```
+
+---
+
+## Error responses
+
+| HTTP status | Body | Cause |
+|-------------|------|-------|
+| `401 Unauthorized` | `{"error": "Invalid credentials"}` | Username not found or password does not match |
+
+<Note>
+  The error response shape for `401` uses a simple `{"error": "..."}` envelope rather than the standard `{"success": false, "data": null, "error": {"code": 401, "message": "..."}}` wrapper. Clients should handle both shapes defensively.
+</Note>
+
+---
+
+## Audit events
+
+An audit record with `Action = "LOGIN"` and `Module = "AUTH"` is written to the database for **every** login attempt:
+
+- **Successful login:** `Result = "Success"`, `Severity = "Info"`, `Message = "Inicio de sesion exitoso."`
+- **Failed login:** `Result = "Fail"`, `Severity = "Warning"`, `Message = "Inicio de sesion rechazado."` — the username is recorded as `EntityId` even though no matching user was found.
+
+<Tip>
+  If `mustChangePassword` is `true` in the response, redirect the user to a password-change screen immediately. Attempting to use other endpoints while this flag is set may result in blocked access depending on application-layer checks.
+</Tip>

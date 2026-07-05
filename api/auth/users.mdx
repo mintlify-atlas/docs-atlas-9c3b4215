@@ -1,0 +1,336 @@
+---
+title: "Manage portal users: list, fetch, toggle, and delete"
+sidebarTitle: "Users"
+description: "Endpoints to list, fetch by ID, toggle active status, and delete portal users. Results are scoped to the caller's company and role."
+---
+
+The user-management endpoints allow administrative roles to inspect and control portal user accounts. Every query and mutation is automatically scoped to the caller's `companyId` and `role` as read from the JWT claims, so cross-company access is prevented at the repository layer. The `GET /api/auth/me` endpoint lets any authenticated user inspect their own identity claims without exposing user-management capabilities.
+
+---
+
+## GET /api/auth/users — List portal users
+
+| Method | URL |
+|--------|-----|
+| `GET` | `/api/auth/users` |
+| `GET` | `/api/v1/auth/users` |
+
+**Authentication:** Bearer token required. Allowed roles: `SUPER_ADMIN`, `ADMIN_GENERAL`, `GESTOR_SUPREMO`, `GESTOR`.
+
+Returns a paginated-style list of portal users visible to the caller. The database layer filters results by the caller's `CompanyID` and enforces the role hierarchy, so a `GESTOR` only sees users they are permitted to manage.
+
+### Query parameters
+
+<ParamField query="search" type="string">
+  Free-text search term matched against username, email, first name, and last name.
+</ParamField>
+
+<ParamField query="role" type="string">
+  Filter by exact role name. Valid values: `SUPER_ADMIN`, `ADMIN_GENERAL`, `GESTOR_SUPREMO`, `GESTOR`, `CUSTOMER`.
+</ParamField>
+
+<ParamField query="onlyActive" type="boolean">
+  When `true`, returns only users with `IsActive = true`. When `false`, returns only inactive users. Omit to return all users regardless of status.
+</ParamField>
+
+### Response fields
+
+<ResponseField name="data" type="array">
+  Array of user objects. See fields below.
+</ResponseField>
+
+<ResponseField name="totalRows" type="integer">
+  Total count of users returned (equals `data.length`).
+</ResponseField>
+
+Each user object in `data` contains:
+
+<ResponseField name="userID" type="integer">Numeric user ID.</ResponseField>
+<ResponseField name="companyID" type="integer">Company the user belongs to.</ResponseField>
+<ResponseField name="companyName" type="string">Name of the company.</ResponseField>
+<ResponseField name="username" type="string">Login username.</ResponseField>
+<ResponseField name="firstName" type="string">First name.</ResponseField>
+<ResponseField name="lastName" type="string">Last name.</ResponseField>
+<ResponseField name="email" type="string">Email address.</ResponseField>
+<ResponseField name="phone" type="string">E.164 normalised phone number.</ResponseField>
+<ResponseField name="role" type="string">Role name assigned to the user.</ResponseField>
+<ResponseField name="isActive" type="boolean">Whether the user can currently log in.</ResponseField>
+<ResponseField name="mustChangePassword" type="boolean">Whether the user is required to change their password on next login.</ResponseField>
+<ResponseField name="createdAt" type="string (ISO 8601)">UTC creation timestamp.</ResponseField>
+<ResponseField name="updatedAt" type="string (ISO 8601) | null">UTC last-update timestamp, or `null` if never updated.</ResponseField>
+
+### Example request
+
+```bash
+curl -G https://localhost:7177/api/auth/users \
+  -H 'Authorization: Bearer <token>' \
+  --data-urlencode 'search=carlos' \
+  --data-urlencode 'role=GESTOR' \
+  --data-urlencode 'onlyActive=true'
+```
+
+### Example response
+
+```json
+{
+  "data": [
+    {
+      "userID": 42,
+      "companyID": 1,
+      "companyName": "ServiciosYa",
+      "username": "gestor.norte",
+      "firstName": "Carlos",
+      "lastName": "Rodríguez",
+      "email": "gestor.norte@serviciosya.com",
+      "phone": "+595981000001",
+      "role": "GESTOR",
+      "isActive": true,
+      "mustChangePassword": false,
+      "createdAt": "2026-04-28T14:30:00Z",
+      "updatedAt": null
+    }
+  ],
+  "totalRows": 1
+}
+```
+
+---
+
+## GET /api/auth/users/{id} — Fetch a single user
+
+| Method | URL |
+|--------|-----|
+| `GET` | `/api/auth/users/{id}` |
+| `GET` | `/api/v1/auth/users/{id}` |
+
+**Authentication:** Bearer token required. Allowed roles: `SUPER_ADMIN`, `ADMIN_GENERAL`, `GESTOR_SUPREMO`, `GESTOR`.
+
+Returns the full `PortalUserDto` for a single user. Returns `404` if the user does not exist **or** is outside the caller's company/role scope — the response is intentionally ambiguous to prevent user enumeration across companies.
+
+### Path parameters
+
+<ParamField path="id" type="integer" required>
+  Numeric ID of the user to fetch.
+</ParamField>
+
+### Example request
+
+```bash
+curl https://localhost:7177/api/auth/users/42 \
+  -H 'Authorization: Bearer <token>'
+```
+
+### Example response
+
+```json
+{
+  "userID": 42,
+  "companyID": 1,
+  "companyName": "ServiciosYa",
+  "username": "gestor.norte",
+  "firstName": "Carlos",
+  "lastName": "Rodríguez",
+  "email": "gestor.norte@serviciosya.com",
+  "phone": "+595981000001",
+  "role": "GESTOR",
+  "isActive": true,
+  "mustChangePassword": false,
+  "createdAt": "2026-04-28T14:30:00Z",
+  "updatedAt": "2026-04-29T09:00:00Z"
+}
+```
+
+### Error responses
+
+| HTTP status | Body | Cause |
+|-------------|------|-------|
+| `404 Not Found` | — | User not found or outside the caller's visible scope |
+
+---
+
+## PATCH /api/auth/users/{id}/toggle — Toggle active status
+
+| Method | URL |
+|--------|-----|
+| `PATCH` | `/api/auth/users/{id}/toggle` |
+| `PATCH` | `/api/v1/auth/users/{id}/toggle` |
+
+**Authentication:** Bearer token required. Allowed roles: `SUPER_ADMIN`, `ADMIN_GENERAL`, `GESTOR_SUPREMO`, `GESTOR`.
+
+Flips the `IsActive` flag of the specified user. If the user is currently active, they become inactive (and cannot log in); if inactive, they become active again. No request body is required.
+
+### Path parameters
+
+<ParamField path="id" type="integer" required>
+  Numeric ID of the user to toggle.
+</ParamField>
+
+### Response
+
+Returns `204 No Content` on success with an empty body.
+
+### Example request
+
+```bash
+curl -X PATCH https://localhost:7177/api/auth/users/42/toggle \
+  -H 'Authorization: Bearer <token>'
+```
+
+<Note>
+  This endpoint writes an audit event with `Action = "TOGGLE_USER_STATUS"` scoped to the caller's identity and IP address.
+</Note>
+
+---
+
+## DELETE /api/auth/users/{id} — Delete a portal user
+
+| Method | URL |
+|--------|-----|
+| `DELETE` | `/api/auth/users/{id}` |
+| `DELETE` | `/api/v1/auth/users/{id}` |
+
+**Authentication:** Bearer token required. Allowed roles: `SUPER_ADMIN` only.
+
+Performs a **logical deletion**: the user's account is deactivated and their access is revoked. No data is physically removed from the database.
+
+If the user has pending service requests (requests that have not yet reached a terminal state), the deletion is deferred: the user is immediately deactivated but flagged as `pendingDeletion = true`. The account will be fully cleaned up once all associated service requests are closed.
+
+An audit event with `Action = "DELETE_PORTAL_USER"` is written on every call.
+
+### Path parameters
+
+<ParamField path="id" type="integer" required>
+  Numeric ID of the user to delete.
+</ParamField>
+
+### Response fields
+
+<ResponseField name="pendingDeletion" type="boolean">
+  `false` — the user was deactivated immediately with no outstanding requests.  
+  `true` — the user was deactivated but has pending service requests; full deletion is deferred.
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  Human-readable description of the outcome, in Spanish.
+</ResponseField>
+
+### Example request
+
+```bash
+curl -X DELETE https://localhost:7177/api/auth/users/42 \
+  -H 'Authorization: Bearer <token>'
+```
+
+### Example response — immediate deletion
+
+```json
+{
+  "pendingDeletion": false,
+  "message": "El usuario quedó inactivo y sin acceso."
+}
+```
+
+### Example response — deferred deletion
+
+```json
+{
+  "pendingDeletion": true,
+  "message": "El usuario quedó inactivo y pendiente de eliminación hasta cerrar sus trámites."
+}
+```
+
+### Error responses
+
+| HTTP status | Body | Cause |
+|-------------|------|-------|
+| `401 Unauthorized` | — | Missing or invalid token |
+| `403 Forbidden` | — | Caller is not `SUPER_ADMIN` |
+
+<Warning>
+  Deletion is logical and permanent from the user's perspective — their `IsActive` is set to `false` and a deletion record is created. There is no restore endpoint. Use the [toggle endpoint](#patch-api-auth-users-id-toggle) if you only need to temporarily suspend an account.
+</Warning>
+
+---
+
+## GET /api/auth/companies — List active companies
+
+| Method | URL |
+|--------|-----|
+| `GET` | `/api/auth/companies` |
+| `GET` | `/api/v1/auth/companies` |
+
+**Authentication:** Bearer token required. Allowed roles: `SUPER_ADMIN` only.
+
+Returns all active companies registered in the platform. Useful when creating internal users via [`POST /api/auth/register/internal`](/api/auth/register#post-api-auth-register-internal) and a `SUPER_ADMIN` needs to pick a target company.
+
+### Response fields
+
+Each item in the returned array contains:
+
+<ResponseField name="companyID" type="integer">
+  Numeric company identifier.
+</ResponseField>
+
+<ResponseField name="companyName" type="string">
+  Display name of the company.
+</ResponseField>
+
+### Example request
+
+```bash
+curl https://localhost:7177/api/auth/companies \
+  -H 'Authorization: Bearer <token>'
+```
+
+### Example response
+
+```json
+[
+  { "companyID": 1, "companyName": "ServiciosYa" },
+  { "companyID": 2, "companyName": "Empresa Demo S.A." }
+]
+```
+
+---
+
+## GET /api/auth/me — Current user identity
+
+| Method | URL |
+|--------|-----|
+| `GET` | `/api/auth/me` |
+| `GET` | `/api/v1/auth/me` |
+
+**Authentication:** Bearer token required. Any authenticated role.
+
+Returns the identity claims extracted directly from the caller's JWT token. This endpoint performs no database query and is useful for client-side verification that a token is valid and to retrieve the caller's own IDs without querying the full user list.
+
+### Response fields
+
+<ResponseField name="userId" type="integer">
+  Numeric ID of the authenticated user.
+</ResponseField>
+
+<ResponseField name="companyId" type="integer">
+  Numeric ID of the user's company.
+</ResponseField>
+
+<ResponseField name="role" type="string">
+  Role name from the JWT claim (e.g. `"CUSTOMER"`, `"GESTOR"`, `"SUPER_ADMIN"`).
+</ResponseField>
+
+### Example request
+
+```bash
+curl https://localhost:7177/api/auth/me \
+  -H 'Authorization: Bearer <token>'
+```
+
+### Example response
+
+```json
+{
+  "userId": 7,
+  "companyId": 1,
+  "role": "CUSTOMER"
+}
+```

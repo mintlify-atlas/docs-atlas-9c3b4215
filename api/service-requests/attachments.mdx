@@ -1,0 +1,212 @@
+---
+title: "Service request file attachments: proofs, invoices, and delivery docs"
+sidebarTitle: "Attachments"
+description: "Upload and retrieve optional attachments, invoice documents, and delivery confirmation files for service requests in ServiciosYa API."
+---
+
+Beyond the required payment proof image submitted at request creation time, a service request can carry three additional file types: an optional customer attachment (for services that allow it), a fiscal invoice document uploaded by staff when the customer requested one, and a delivery confirmation document uploaded by staff when the service is completed. All uploaded files are saved to `wwwroot/uploads/service-requests/` on the server disk and are served as static files. Each uploaded file is stored with a UUID-prefixed filename to avoid collisions.
+
+<Note>
+  The payment proof image itself is not managed by these endpoints — it is uploaded separately via `POST /api/uploads/payment` before creating the request. See [Create & Retrieve](/api/service-requests/create) for that flow.
+</Note>
+
+---
+
+## POST /api/servicerequests/{id}/attachment — Upload optional attachment
+
+Uploads an additional file attachment to a service request. This is only permitted when the associated service has `PermiteAdjunto = 1` set in its service definition. The stored procedure `CreateServiceRequestAttachment` enforces this check and returns an error if the service does not allow attachments.
+
+**Authentication:** Bearer token (any role)
+
+**Content type:** `multipart/form-data`
+
+**Max file size:** 10 MB
+
+**Accepted file types:** Any (no extension restriction at the API layer)
+
+### Path parameters
+
+<ParamField path="id" type="integer" required>
+  The `requestId` of the service request to attach the file to.
+</ParamField>
+
+### Form fields
+
+<ParamField body="file" type="file" required>
+  The file to upload. Must be non-empty and no larger than 10 MB.
+</ParamField>
+
+### Response
+
+<ResponseField name="attachmentId" type="integer">
+  The auto-generated ID of the newly created attachment record.
+</ResponseField>
+
+```json
+{ "attachmentId": 45 }
+```
+
+<Note>
+  Attempting to upload an attachment for a service that has `PermiteAdjunto = 0` will return an error from the `CreateServiceRequestAttachment` stored procedure. Check the `permiteAdjunto` field on the service request detail (`GET /api/servicerequests/{id}`) before showing the upload UI to the user.
+</Note>
+
+---
+
+## GET /api/servicerequests/{id}/attachment — Get attachment info
+
+Returns the metadata of the optional attachment associated with a service request. Does not return the file content itself — use the `rutaArchivo` path to construct the full URL for download.
+
+**Authentication:** Bearer token (any role)
+
+### Path parameters
+
+<ParamField path="id" type="integer" required>
+  The `requestId` of the service request whose attachment metadata you want to retrieve.
+</ParamField>
+
+### Response
+
+Returns `404 Not Found` if no attachment has been uploaded for the request.
+
+<ResponseField name="id" type="integer">Auto-generated attachment record ID.</ResponseField>
+<ResponseField name="serviceRequestID" type="integer">ID of the parent service request.</ResponseField>
+<ResponseField name="nombreArchivo" type="string">Original filename as provided by the uploader.</ResponseField>
+<ResponseField name="rutaArchivo" type="string">Server-relative path to the file, e.g. `/uploads/service-requests/uuid_filename.ext`. Prefix with the server base URL to build a download link.</ResponseField>
+<ResponseField name="tamañoBytes" type="integer">File size in bytes.</ResponseField>
+<ResponseField name="fechaSubida" type="string (ISO 8601)">Timestamp when the file was uploaded.</ResponseField>
+
+---
+
+## POST /api/servicerequests/{id}/invoice — Upload invoice document
+
+Uploads a fiscal invoice document for a service request that was created with `requiresInvoice = true`. This is a staff-only action performed after the payment has been approved and the service is in progress.
+
+**Authentication:** Bearer token — `SUPER_ADMIN`, `ADMIN_GENERAL`, or `GESTOR_SUPREMO`
+
+**Content type:** `multipart/form-data`
+
+**Max file size:** 10 MB
+
+**Accepted file types:** `.pdf`, `.png`, `.jpg`, `.jpeg`
+
+### Path parameters
+
+<ParamField path="id" type="integer" required>
+  The `requestId` of the service request to attach the invoice to.
+</ParamField>
+
+### Form fields
+
+<ParamField body="file" type="file" required>
+  The invoice file. Must be non-empty, no larger than 10 MB, and have an accepted extension (`.pdf`, `.png`, `.jpg`, or `.jpeg`). Returns `400 Bad Request` for any other extension.
+</ParamField>
+
+### Response
+
+<ResponseField name="invoiceUrl" type="string">
+  Server-relative path where the invoice was saved, e.g. `/uploads/service-requests/uuid_invoice.pdf`.
+</ResponseField>
+
+```json
+{ "invoiceUrl": "/uploads/service-requests/a1b2c3d4-e5f6-7890-abcd-ef1234567890_invoice.pdf" }
+```
+
+---
+
+## POST /api/servicerequests/{id}/delivery-attachment — Upload delivery confirmation
+
+Uploads a delivery confirmation document when a service request is completed. This can be a signed delivery receipt, a photo, or any supporting document in an accepted format.
+
+**Authentication:** Bearer token — `SUPER_ADMIN`, `ADMIN_GENERAL`, `GESTOR_SUPREMO`, or `GESTOR`
+
+**Content type:** `multipart/form-data`
+
+**Max file size:** 10 MB
+
+**Accepted file types:** `.pdf`, `.png`, `.jpg`, `.jpeg`, `.webp`
+
+### Path parameters
+
+<ParamField path="id" type="integer" required>
+  The `requestId` of the service request to attach the delivery document to.
+</ParamField>
+
+### Form fields
+
+<ParamField body="file" type="file" required>
+  The delivery confirmation file. Must be non-empty, no larger than 10 MB, and have an accepted extension (`.pdf`, `.png`, `.jpg`, `.jpeg`, or `.webp`). Returns `400 Bad Request` for any other extension.
+</ParamField>
+
+### Response
+
+<ResponseField name="deliveryAttachmentUrl" type="string">
+  Server-relative path where the delivery document was saved, e.g. `/uploads/service-requests/uuid_delivery.pdf`.
+</ResponseField>
+
+```json
+{ "deliveryAttachmentUrl": "/uploads/service-requests/b2c3d4e5-f6a7-8901-bcde-f01234567890_delivery.pdf" }
+```
+
+---
+
+## File storage
+
+All files uploaded through these endpoints are saved to the `wwwroot/uploads/service-requests/` directory on the server. Each file is renamed to `{UUID}_{originalFilename}` before saving to prevent collisions. The relative path stored in the database (`/uploads/service-requests/...`) can be prefixed with the server base URL to construct a publicly accessible download link, since the API serves static files from `wwwroot`.
+
+---
+
+## Examples
+
+**Upload an optional attachment (customer)**
+
+```bash
+curl -X POST https://your-api/api/servicerequests/123/attachment \
+  -H "Authorization: Bearer <token>" \
+  -F "file=@/path/to/document.pdf"
+```
+
+```json
+{ "attachmentId": 45 }
+```
+
+**Get attachment metadata**
+
+```bash
+curl https://your-api/api/servicerequests/123/attachment \
+  -H "Authorization: Bearer <token>"
+```
+
+```json
+{
+  "id": 45,
+  "serviceRequestID": 123,
+  "nombreArchivo": "document.pdf",
+  "rutaArchivo": "/uploads/service-requests/a1b2c3d4-e5f6-7890-abcd-ef1234567890_document.pdf",
+  "tamañoBytes": 204800,
+  "fechaSubida": "2026-04-22T15:00:00"
+}
+```
+
+**Upload an invoice document (staff)**
+
+```bash
+curl -X POST https://your-api/api/servicerequests/123/invoice \
+  -H "Authorization: Bearer <admin-token>" \
+  -F "file=@/path/to/invoice.pdf"
+```
+
+```json
+{ "invoiceUrl": "/uploads/service-requests/b2c3d4e5-f6a7-8901-bcde-f01234567890_invoice.pdf" }
+```
+
+**Upload a delivery confirmation document (staff)**
+
+```bash
+curl -X POST https://your-api/api/servicerequests/123/delivery-attachment \
+  -H "Authorization: Bearer <staff-token>" \
+  -F "file=@/path/to/delivery-receipt.jpg"
+```
+
+```json
+{ "deliveryAttachmentUrl": "/uploads/service-requests/c3d4e5f6-a7b8-9012-cdef-012345678901_delivery-receipt.jpg" }
+```

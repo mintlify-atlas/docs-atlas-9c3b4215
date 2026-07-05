@@ -1,0 +1,258 @@
+---
+title: "Custom service requests: uncatalogued service inquiries"
+sidebarTitle: "Custom Requests"
+description: "Endpoints for submitting and managing custom (uncatalogued) service requests. Customers submit inquiries; staff routes them through NUEVO, CONTACTADO, EN_REVISION, CONVERTIDO_A_SERVICIO, or DESCARTADO."
+---
+
+Custom service requests let customers express interest in a service that is not yet present in the catalog. Instead of selecting from a fixed list, the customer describes what they need in free-form text and optionally indicates which catalog category prompted the inquiry. Staff then reviews these submissions and routes each one through a defined status lifecycle — potentially converting a popular request into a full catalog entry.
+
+## What is a custom service request?
+
+A custom service request is a lightweight inquiry record. It captures a proposed title, an optional description, an optional category hint, and a flag indicating whether the customer prefers to be contacted via WhatsApp. Unlike formal service requests, custom requests are not linked to a payment or a catalog entry at creation time. They serve as a discovery and triage tool for the operations team.
+
+## Custom service request fields
+
+| Field | Type | Description |
+|---|---|---|
+| `customServiceRequestId` | `long` | Auto-generated primary key. |
+| `possibleTitle` | `string` | Short title describing the desired service. Required; trimmed on write. |
+| `possibleDescription` | `string` | Optional extended description. Truncated to 800 characters if longer. |
+| `possibleCategory` | `string` | Optional category the customer thinks the service belongs to. Truncated to 120 characters. |
+| `sourceCategory` | `string` | The catalog category the customer was browsing when they submitted the request. Truncated to 120 characters. Useful for funnel analysis. |
+| `requestedViaWhatsApp` | `bool` | When `true`, the customer indicated they would like to be contacted via WhatsApp. Defaults to `true`. |
+| `status` | `string` | Current lifecycle status (see below). |
+| `adminNotes` | `string` | Internal notes left by the reviewing staff member. Max 500 characters. |
+| `createdAt` | `datetime` | Timestamp of submission. |
+| `reviewedAt` | `datetime` | Timestamp of the last status update. |
+| `reviewedBy` | `int` | User ID of the staff member who last updated the status. |
+
+## Status lifecycle
+
+Each custom service request moves through the following statuses as staff processes it.
+
+```
+NUEVO → CONTACTADO → EN_REVISION → CONVERTIDO_A_SERVICIO
+                  ↘
+                   DESCARTADO
+```
+
+| Status | Meaning |
+|---|---|
+| `NUEVO` | Freshly submitted; not yet reviewed by staff. |
+| `CONTACTADO` | Staff has reached out to the customer for more details. |
+| `EN_REVISION` | The request is being evaluated for catalog inclusion. |
+| `CONVERTIDO_A_SERVICIO` | A formal catalog service has been created from this request. |
+| `DESCARTADO` | The request was reviewed and will not be fulfilled or added to the catalog. |
+
+<Note>
+  Status values are **case-insensitive** on input — the API normalises them to uppercase internally. For example, `"contactado"` and `"CONTACTADO"` are both accepted.
+</Note>
+
+---
+
+## POST /api/custom-service-requests
+
+Submits a new custom service request on behalf of the authenticated user.
+
+**Required role:** Any authenticated user
+
+### Request body
+
+<ParamField body="possibleTitle" type="string" required>
+  A short title describing the desired service. Whitespace is trimmed. Returns `400 Bad Request` if the trimmed value is blank.
+</ParamField>
+
+<ParamField body="possibleDescription" type="string">
+  Optional extended description of the desired service. Values longer than 800 characters are silently truncated to 800 characters.
+</ParamField>
+
+<ParamField body="possibleCategory" type="string">
+  Optional category hint — the customer's guess at where this service would fit. Values longer than 120 characters are truncated.
+</ParamField>
+
+<ParamField body="sourceCategory" type="string">
+  The catalog category the customer was browsing when they decided to submit this request. Values longer than 120 characters are truncated. See the [tip below](#source-category-tip) for how to use this field.
+</ParamField>
+
+<ParamField body="requestedViaWhatsApp" type="boolean">
+  When `true`, the customer prefers WhatsApp contact. Defaults to `true`.
+</ParamField>
+
+### Response
+
+Returns `200 OK` with the auto-generated identifier of the new request.
+
+```json
+{
+  "customServiceRequestId": 7
+}
+```
+
+Returns `400 Bad Request` if `possibleTitle` is missing or blank after trimming.
+
+### Example
+
+```bash
+curl -X POST https://api.serviciosya.com/api/custom-service-requests \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "possibleTitle": "Apostilla de título universitario",
+    "possibleDescription": "Necesito apostillar un título de grado para presentar en el exterior.",
+    "possibleCategory": "Legales",
+    "sourceCategory": "Escribania y legales",
+    "requestedViaWhatsApp": true
+  }'
+```
+
+---
+
+## GET /api/custom-service-requests
+
+Returns a paginated admin view of all custom service requests for the authenticated company.
+
+**Required role:** `SUPER_ADMIN`, `ADMIN_GENERAL`, `GESTOR_SUPREMO`, or `GESTOR`
+
+### Query parameters
+
+<ParamField query="pageNumber" type="integer">
+  Page index (1-based). Defaults to `1`.
+</ParamField>
+
+<ParamField query="pageSize" type="integer">
+  Number of records per page. Defaults to `20`.
+</ParamField>
+
+<ParamField query="search" type="string">
+  Optional free-text search applied against the request title, description, and customer details.
+</ParamField>
+
+<ParamField query="status" type="string">
+  Optional filter by status value. Must be one of `NUEVO`, `CONTACTADO`, `EN_REVISION`, `CONVERTIDO_A_SERVICIO`, or `DESCARTADO`. Case-insensitive.
+</ParamField>
+
+### Response
+
+Returns `200 OK` with a paginated result object. Each item in the `data` array is a `CustomServiceRequestDto` containing all fields listed in the [Custom service request fields](#custom-service-request-fields) table, plus the submitting customer's `firstName`, `lastName`, `phone`, and `email`.
+
+---
+
+## PUT /api/custom-service-requests/\{id\}/status
+
+Updates the status of a custom service request and optionally records internal admin notes.
+
+**Required role:** `SUPER_ADMIN`, `ADMIN_GENERAL`, `GESTOR_SUPREMO`, or `GESTOR`
+
+### Path parameter
+
+<ParamField path="id" type="integer" required>
+  The `customServiceRequestId` of the request to update.
+</ParamField>
+
+### Request body
+
+<ParamField body="status" type="string" required>
+  The new status. Must be one of `NUEVO`, `CONTACTADO`, `EN_REVISION`, `CONVERTIDO_A_SERVICIO`, or `DESCARTADO` (case-insensitive). Returns `400 Bad Request` if the value is not in this set.
+</ParamField>
+
+<ParamField body="adminNotes" type="string">
+  Optional internal notes about the review decision. Values longer than 500 characters are silently truncated. Not visible to the customer.
+</ParamField>
+
+### Response
+
+Returns `200 OK` on success.
+
+Returns `400 Bad Request` if `status` is missing or not one of the allowed values.
+
+### Example
+
+```bash
+curl -X PUT https://api.serviciosya.com/api/custom-service-requests/7/status \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "status": "EN_REVISION",
+    "adminNotes": "Servicio viable; pendiente de tarifa. Consultar con el área legal."
+  }'
+```
+
+---
+
+## CustomServiceRequestDto shape
+
+The following fields appear in responses from `GET /api/custom-service-requests`.
+
+<ResponseField name="customServiceRequestID" type="long">
+  Unique identifier of the custom request.
+</ResponseField>
+
+<ResponseField name="companyID" type="integer">
+  Tenant identifier.
+</ResponseField>
+
+<ResponseField name="userID" type="integer">
+  User ID of the customer who submitted the request.
+</ResponseField>
+
+<ResponseField name="firstName" type="string">
+  Customer's first name.
+</ResponseField>
+
+<ResponseField name="lastName" type="string">
+  Customer's last name.
+</ResponseField>
+
+<ResponseField name="phone" type="string">
+  Customer's phone number.
+</ResponseField>
+
+<ResponseField name="email" type="string">
+  Customer's email address.
+</ResponseField>
+
+<ResponseField name="possibleTitle" type="string">
+  Proposed title of the desired service.
+</ResponseField>
+
+<ResponseField name="possibleDescription" type="string">
+  Extended description (max 800 chars).
+</ResponseField>
+
+<ResponseField name="possibleCategory" type="string">
+  Customer's category hint (max 120 chars).
+</ResponseField>
+
+<ResponseField name="sourceCategory" type="string">
+  Catalog category the customer was browsing when submitting (max 120 chars).
+</ResponseField>
+
+<ResponseField name="requestedViaWhatsApp" type="boolean">
+  Whether the customer requested WhatsApp contact.
+</ResponseField>
+
+<ResponseField name="status" type="string">
+  Current lifecycle status.
+</ResponseField>
+
+<ResponseField name="adminNotes" type="string">
+  Internal notes from the reviewing staff member (max 500 chars).
+</ResponseField>
+
+<ResponseField name="createdAt" type="string (ISO 8601)">
+  Timestamp of submission.
+</ResponseField>
+
+<ResponseField name="reviewedAt" type="string (ISO 8601)">
+  Timestamp of the most recent status update.
+</ResponseField>
+
+<ResponseField name="reviewedBy" type="integer">
+  User ID of the staff member who performed the most recent status update.
+</ResponseField>
+
+---
+
+<Tip id="source-category-tip">
+  Populate `sourceCategory` with the catalog category the customer was viewing when they tapped "request a custom service." This lets your team filter `GET /api/custom-service-requests?status=NUEVO` by `sourceCategory` to identify which parts of the catalog have the most unmet demand — a direct signal for which new catalog entries to prioritise.
+</Tip>

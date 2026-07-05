@@ -1,0 +1,231 @@
+---
+title: "Register users: public customer and internal staff endpoints"
+sidebarTitle: "Register"
+description: "Two registration endpoints: POST /api/auth/register for public customer self-registration, and POST /api/auth/register/internal for role-based internal user creation."
+---
+
+ServiciosYa exposes two distinct user-registration flows. The first is a fully public endpoint that allows customers to create their own accounts. The second is a protected endpoint used by administrators and managers to create internal staff accounts; it enforces a role hierarchy so that a caller can only assign roles equal to or below their own level in the hierarchy.
+
+Both flows assign an initial password of `123456` and set `mustChangePassword = true`, so every newly registered user is required to change their password on first use.
+
+---
+
+## POST /api/auth/register — Public customer registration
+
+| Method | URL |
+|--------|-----|
+| `POST` | `/api/auth/register` |
+| `POST` | `/api/v1/auth/register` |
+
+**Authentication:** None — public endpoint.
+
+The `companyId` is always forced to `1` (the base ServiciosYa company) by the server and cannot be overridden by the caller. The `phone` field is normalised to E.164 format by [`PhoneNumberPolicy`](#phone-number-normalisation) before it is stored.
+
+### Request body
+
+<ParamField body="username" type="string" required>
+  Desired login username. Must be unique within the company. Typically an email address, but any non-empty string is accepted.
+</ParamField>
+
+<ParamField body="email" type="string" required>
+  User's email address. Must be unique within the company.
+</ParamField>
+
+<ParamField body="phone" type="string" required>
+  User's phone number. Normalised to E.164 format (e.g. `+595981123456`). Raw digits, country-prefixed strings, or formatted numbers are all accepted; the server strips non-numeric characters and infers the country from `phoneCountryIso` or from the leading digits.
+</ParamField>
+
+<ParamField body="phoneCountryIso" type="string">
+  ISO 3166-1 alpha-2 country code used to resolve the dial prefix for `phone`. Supported values: `PY`, `AR`, `BR`, `US`. When omitted, the API attempts to infer the country from the number itself.
+</ParamField>
+
+<ParamField body="firstName" type="string" required>
+  User's first name.
+</ParamField>
+
+<ParamField body="lastName" type="string" required>
+  User's last name.
+</ParamField>
+
+### Response fields
+
+On success the endpoint returns `200 OK` with the same shape as [`POST /api/auth/login`](/api/auth/login).
+
+<ResponseField name="token" type="string">
+  Signed JWT Bearer token for immediate use.
+</ResponseField>
+
+<ResponseField name="mustChangePassword" type="boolean">
+  Always `true` for newly registered users. The user must call [`POST /api/auth/change-password`](/api/auth/password#post-api-auth-change-password) before using other endpoints.
+</ResponseField>
+
+### Example request
+
+```bash
+curl -X POST https://localhost:7177/api/auth/register \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "username": "maria.perez",
+    "email": "maria.perez@example.com",
+    "phone": "0981123456",
+    "phoneCountryIso": "PY",
+    "firstName": "María",
+    "lastName": "Pérez"
+  }'
+```
+
+### Example response
+
+```json
+{
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "mustChangePassword": true
+}
+```
+
+### Error responses
+
+| HTTP status | Body | Cause |
+|-------------|------|-------|
+| `400 Bad Request` | `{"error": "El formato del número de celular no es válido para el país seleccionado."}` | Phone number cannot be normalised for the given country |
+| `500` / DB error | SQL-thrown message | `Username ya registrado.` or `Email ya registrado.` — uniqueness enforced in the stored procedure |
+
+---
+
+## POST /api/auth/register/internal — Internal user registration
+
+| Method | URL |
+|--------|-----|
+| `POST` | `/api/auth/register/internal` |
+| `POST` | `/api/v1/auth/register/internal` |
+
+**Authentication:** Bearer token required. Allowed roles: `SUPER_ADMIN`, `ADMIN_GENERAL`, `GESTOR_SUPREMO`, `GESTOR`.
+
+This endpoint creates staff accounts according to a strict role hierarchy. The caller may only assign roles that are subordinate to their own. The server reads the caller's `role` and `companyId` directly from the JWT claims; they cannot be spoofed via the request body.
+
+### Role hierarchy
+
+| Caller role | Can create roles |
+|-------------|-----------------|
+| `SUPER_ADMIN` | `ADMIN_GENERAL`, `GESTOR_SUPREMO`, `GESTOR`, `CUSTOMER` |
+| `ADMIN_GENERAL` | `GESTOR_SUPREMO`, `GESTOR`, `CUSTOMER` |
+| `GESTOR_SUPREMO` | `GESTOR`, `CUSTOMER` |
+| `GESTOR` | `CUSTOMER` only |
+
+### Request body
+
+<ParamField body="username" type="string" required>
+  Desired login username for the new internal user.
+</ParamField>
+
+<ParamField body="email" type="string" required>
+  Email address for the new internal user.
+</ParamField>
+
+<ParamField body="phone" type="string" required>
+  Phone number. Normalised to E.164 format using the same rules as the public registration endpoint.
+</ParamField>
+
+<ParamField body="phoneCountryIso" type="string">
+  ISO country code used for phone normalisation (`PY`, `AR`, `BR`, `US`).
+</ParamField>
+
+<ParamField body="firstName" type="string" required>
+  First name of the new user.
+</ParamField>
+
+<ParamField body="lastName" type="string" required>
+  Last name of the new user.
+</ParamField>
+
+<ParamField body="roleName" type="string" required>
+  Role to assign to the new user. Must be one of the roles the caller is permitted to create (see hierarchy table above). Valid values: `ADMIN_GENERAL`, `GESTOR_SUPREMO`, `GESTOR`, `CUSTOMER`.
+</ParamField>
+
+<ParamField body="companyId" type="integer">
+  Company to assign the new user to. Only `SUPER_ADMIN` callers may specify a company other than their own. For all other roles, this field is ignored and the caller's own `companyId` is used.
+</ParamField>
+
+### Response fields
+
+On success the endpoint returns `200 OK` with the full `PortalUserDto` object for the created user.
+
+<ResponseField name="userID" type="integer">Numeric ID assigned to the new user.</ResponseField>
+<ResponseField name="companyID" type="integer">Company the user was created in.</ResponseField>
+<ResponseField name="companyName" type="string">Name of the company.</ResponseField>
+<ResponseField name="username" type="string">Login username.</ResponseField>
+<ResponseField name="firstName" type="string">First name.</ResponseField>
+<ResponseField name="lastName" type="string">Last name.</ResponseField>
+<ResponseField name="email" type="string">Email address.</ResponseField>
+<ResponseField name="phone" type="string">Normalised E.164 phone number.</ResponseField>
+<ResponseField name="role" type="string">Assigned role name.</ResponseField>
+<ResponseField name="isActive" type="boolean">Always `true` for newly created users.</ResponseField>
+<ResponseField name="mustChangePassword" type="boolean">Always `true` — the initial password is `123456`.</ResponseField>
+<ResponseField name="createdAt" type="string (ISO 8601)">UTC timestamp of creation.</ResponseField>
+<ResponseField name="updatedAt" type="string (ISO 8601) | null">UTC timestamp of last update, or `null`.</ResponseField>
+
+### Example request
+
+```bash
+curl -X POST https://localhost:7177/api/auth/register/internal \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer <token>' \
+  -d '{
+    "username": "gestor.norte",
+    "email": "gestor.norte@serviciosya.com",
+    "phone": "+595981000001",
+    "phoneCountryIso": "PY",
+    "firstName": "Carlos",
+    "lastName": "Rodríguez",
+    "roleName": "GESTOR",
+    "companyId": 1
+  }'
+```
+
+### Example response
+
+```json
+{
+  "userID": 42,
+  "companyID": 1,
+  "companyName": "ServiciosYa",
+  "username": "gestor.norte",
+  "firstName": "Carlos",
+  "lastName": "Rodríguez",
+  "email": "gestor.norte@serviciosya.com",
+  "phone": "+595981000001",
+  "role": "GESTOR",
+  "isActive": true,
+  "mustChangePassword": true,
+  "createdAt": "2026-04-28T14:30:00Z",
+  "updatedAt": null
+}
+```
+
+### Error responses
+
+| HTTP status | Body | Cause |
+|-------------|------|-------|
+| `400 Bad Request` | `{"error": "El formato del número de celular no es válido..."}` | Phone normalisation failure |
+| `401 Unauthorized` | — | Missing or invalid token |
+| `403 Forbidden` | — | Caller role not permitted to use this endpoint |
+| `500` / DB error | SQL-thrown message | Role hierarchy violation or duplicate username/email |
+
+<Warning>
+  All internal users receive an initial password of `123456`. This temporary credential must be changed via [`POST /api/auth/change-password`](/api/auth/password#post-api-auth-change-password) before the account is used in production. Distribute credentials securely and instruct users to change their password immediately on first login.
+</Warning>
+
+---
+
+## Phone number normalisation
+
+The `PhoneNumberPolicy` utility strips all non-numeric characters, resolves the national number, and prefixes the E.164 dial code. Supported countries and their rules:
+
+| ISO | Dial code | National digits |
+|-----|-----------|----------------|
+| `PY` | `+595` | 9 |
+| `AR` | `+54` | 10 |
+| `BR` | `+55` | 10–11 |
+| `US` | `+1` | 10 |
+
+If `phoneCountryIso` is omitted, the API infers the country from the leading digits of the submitted number. Submission fails with `400` if the country cannot be determined or the digit count does not match the country's rule.

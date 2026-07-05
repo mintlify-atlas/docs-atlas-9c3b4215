@@ -1,0 +1,299 @@
+---
+title: "Audit logging in ServiciosYa API: legacy and PRO audit trails"
+sidebarTitle: "Audit Logging"
+description: "ServiciosYa API maintains two audit systems: a legacy dbo.InsertAuditLog trail and a structured AuditEvents/AuditChanges PRO system with field-level change tracking."
+---
+
+Every mutating operation in the ServiciosYa API — logins, registrations, service changes, payment validations, file uploads — automatically fires an audit event. No extra work is required from the calling client. The `AuditEventService.TryWriteAsync` method is called at the end of each controller action and internally by stored procedures, ensuring a complete trail of who did what, when, and from which IP address.
+
+The platform runs two complementary audit systems side by side:
+
+- **Legacy** — rows written by the `dbo.InsertAuditLog` stored procedure directly from within SQL stored procedures, queryable via `POST /api/audit/logs`.
+- **PRO** — structured rows written by `AuditEventService` into `dbo.AuditEvents` and `dbo.AuditChanges`, queryable via `POST /api/v1/audit/events/search` and `GET /api/v1/audit/events/{id}`.
+
+<Note>
+  `TryWriteAsync` is designed to be fault-tolerant. It wraps every database write in a `try/catch` and logs a warning on failure instead of throwing. An audit failure will **never** block or roll back the business operation that triggered it.
+</Note>
+
+<Info>
+  The default data retention for audit events is controlled by the `AuditRetentionDays` application setting (default: **90 days**). Records older than this threshold can be purged during scheduled maintenance without affecting the operational system.
+</Info>
+
+---
+
+## PRO Audit System
+
+### AuditEvents table
+
+The `dbo.AuditEvents` table (created by `2026-04-27_audit_pro_and_diagnostics.sql`) stores one row per audited operation with the following fields:
+
+| Field | Type | Description |
+|---|---|---|
+| `Id` | `BIGINT` | Auto-increment primary key |
+| `TimestampUtc` | `DATETIME2` | UTC timestamp of the event |
+| `UserId` | `INT` (nullable) | ID of the acting user, or `null` for anonymous actions |
+| `UserEmail` | `NVARCHAR(256)` | Email or username of the acting user |
+| `Role` | `NVARCHAR(100)` | Role of the acting user at the time of the event |
+| `CompanyId` | `INT` (nullable) | Tenant identifier |
+| `Action` | `NVARCHAR(100)` | Action code (e.g. `LOGIN`, `CREATE_SERVICE`) |
+| `Module` | `NVARCHAR(100)` | Functional area (e.g. `AUTH`, `PAYMENTS`) |
+| `EntityName` | `NVARCHAR(100)` | Table or domain object affected |
+| `EntityId` | `NVARCHAR(100)` | Identifier of the affected entity |
+| `CorrelationId` | `UNIQUEIDENTIFIER` | Request-scoped correlation ID for tracing |
+| `IpAddress` | `NVARCHAR(64)` | Client IP address |
+| `UserAgent` | `NVARCHAR(512)` | HTTP `User-Agent` header value |
+| `Result` | `NVARCHAR(20)` | `Success` or `Fail` |
+| `Severity` | `NVARCHAR(20)` | `Info` or `Warning` |
+| `Message` | `NVARCHAR(500)` | Human-readable description of the event |
+| `IsVisibleForAdmins` | `BIT` | Whether `ADMIN_GENERAL` can see this event (default `1`) |
+| `HiddenByUserId` | `INT` (nullable) | User who hid the event (set by hide/unhide operations) |
+| `HiddenAtUtc` | `DATETIME2` (nullable) | UTC timestamp when the event was hidden |
+
+### AuditChanges table
+
+Field-level diffs are stored in `dbo.AuditChanges`, linked to `dbo.AuditEvents` by `AuditEventId`:
+
+| Field | Type | Description |
+|---|---|---|
+| `Id` | `BIGINT` | Auto-increment primary key |
+| `AuditEventId` | `BIGINT` | Foreign key to `dbo.AuditEvents` |
+| `FieldName` | `NVARCHAR(128)` | Name of the changed field |
+| `OldValue` | `NVARCHAR(MAX)` | Value before the change (nullable) |
+| `NewValue` | `NVARCHAR(MAX)` | Value after the change (nullable) |
+
+<Note>
+  Values containing the words `password`, `token`, or `authorization` (case-insensitive) are automatically replaced with `[REDACTED]` before being written to `AuditChanges`. Values longer than 4,000 characters are truncated.
+</Note>
+
+---
+
+## Querying PRO Audit Events
+
+### Search events
+
+**Endpoint:** `POST /api/v1/audit/events/search`  
+**Auth:** `SUPER_ADMIN` or `ADMIN_GENERAL`
+
+`SUPER_ADMIN` can search across all companies and see all events including hidden ones. `ADMIN_GENERAL` sees only events belonging to their own company that have `IsVisibleForAdmins = 1`.
+
+**Request body**
+
+```json
+{
+  "action": "LOGIN",
+  "module": "AUTH",
+  "result": "Fail",
+  "severity": "Warning",
+  "userId": 42,
+  "companyId": 1,
+  "username": "john.doe",
+  "dateFromUtc": "2026-04-01T00:00:00Z",
+  "dateToUtc": "2026-04-30T23:59:59Z",
+  "correlationId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "isVisibleForAdmins": true,
+  "pageNumber": 1,
+  "pageSize": 50
+}
+```
+
+All filter fields are optional. Omit any field to match all values for that dimension. `pageSize` is clamped to a maximum of `200`.
+
+**Response `200 OK`**
+
+```json
+{
+  "totalRows": 1,
+  "pageNumber": 1,
+  "pageSize": 50,
+  "data": [
+    {
+      "id": 1001,
+      "timestampUtc": "2026-04-15T14:32:10Z",
+      "userId": 42,
+      "userEmail": "john.doe",
+      "role": "CUSTOMER",
+      "companyId": 1,
+      "companyName": "ServiciosYa",
+      "action": "LOGIN",
+      "module": "AUTH",
+      "entityName": "User",
+      "entityId": "42",
+      "correlationId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+      "ipAddress": "203.0.113.45",
+      "userAgent": "Mozilla/5.0 ...",
+      "result": "Fail",
+      "severity": "Warning",
+      "message": "Inicio de sesion rechazado.",
+      "isVisibleForAdmins": true,
+      "hiddenByUserId": null,
+      "hiddenAtUtc": null
+    }
+  ]
+}
+```
+
+### Get a single event with field-level changes
+
+**Endpoint:** `GET /api/v1/audit/events/{id}`  
+**Auth:** `SUPER_ADMIN` or `ADMIN_GENERAL`
+
+```bash
+curl -X GET https://api.example.com/api/v1/audit/events/1001 \
+  -H "Authorization: Bearer <token>"
+```
+
+**Response `200 OK`** — includes a `changes` array with per-field diffs:
+
+```json
+{
+  "id": 1001,
+  "action": "UPDATE_REQUEST_STATUS",
+  "module": "SERVICE_REQUESTS",
+  "entityName": "ServiceRequests",
+  "entityId": "88",
+  "result": "Success",
+  "severity": "Info",
+  "message": "Estado de solicitud cambiado a EN_PROCESO.",
+  "changes": [
+    {
+      "id": 501,
+      "auditEventId": 1001,
+      "fieldName": "Before",
+      "oldValue": "{\"status\":\"SOLICITADO\", ...}",
+      "newValue": null
+    },
+    {
+      "id": 502,
+      "auditEventId": 1001,
+      "fieldName": "After",
+      "oldValue": null,
+      "newValue": "{\"status\":\"EN_PROCESO\", ...}"
+    }
+  ]
+}
+```
+
+---
+
+## Managing Event Visibility
+
+`SUPER_ADMIN` can hide sensitive events from `ADMIN_GENERAL` users without deleting them.
+
+### Hide an event
+
+**Endpoint:** `POST /api/v1/audit/{id}/hide`  
+**Auth:** `SUPER_ADMIN` only
+
+```bash
+curl -X POST https://api.example.com/api/v1/audit/1001/hide \
+  -H "Authorization: Bearer <token>"
+```
+
+Sets `IsVisibleForAdmins = 0`, records `HiddenByUserId` and `HiddenAtUtc`.
+
+### Unhide an event
+
+**Endpoint:** `POST /api/v1/audit/{id}/unhide`  
+**Auth:** `SUPER_ADMIN` only
+
+```bash
+curl -X POST https://api.example.com/api/v1/audit/1001/unhide \
+  -H "Authorization: Bearer <token>"
+```
+
+Sets `IsVisibleForAdmins = 1` and clears `HiddenByUserId` and `HiddenAtUtc`.
+
+---
+
+## Legacy Audit Logs
+
+The legacy system predates the PRO tables and is backed by the `dbo.InsertAuditLog` stored procedure, which is called directly from within every core stored procedure (`Auth_Login`, `CreateService`, `CreateServiceRequest`, etc.).
+
+**Endpoint:** `POST /api/audit/logs`  
+**Auth:** `SUPER_ADMIN` or `ADMIN_GENERAL`
+
+**Request body (all fields optional)**
+
+```json
+{
+  "userId": 42,
+  "actionType": "LOGIN",
+  "entityName": "User",
+  "entityId": 42,
+  "searchValue": "john",
+  "dateFrom": "2026-04-01T00:00:00Z",
+  "dateTo": "2026-04-30T23:59:59Z",
+  "pageNumber": 1,
+  "pageSize": 50
+}
+```
+
+**Response `200 OK`**
+
+```json
+{
+  "totalRows": 12,
+  "pageNumber": 1,
+  "pageSize": 50,
+  "data": [
+    {
+      "auditID": 7001,
+      "userID": 42,
+      "username": "john.doe",
+      "companyName": "ServiciosYa",
+      "actionType": "LOGIN",
+      "entityName": "User",
+      "entityID": 42,
+      "oldValues": null,
+      "newValues": "{\"Username\":\"john.doe\",\"Role\":\"CUSTOMER\",\"Result\":\"SUCCESS\"}",
+      "iPAddress": "203.0.113.45",
+      "createdAt": "2026-04-15T14:32:10Z"
+    }
+  ]
+}
+```
+
+Legacy log entries are enriched at query time: `Username` and `CompanyName` are resolved by joining `dbo.[User]` and `dbo.Company` respectively, so the raw stored values (numeric IDs) are translated into human-readable labels.
+
+<Note>
+  Legacy audit entries do not support the hide/unhide operations or field-level `changes` arrays. Those features are exclusive to the PRO system. If the `dbo.AuditEvents` table does not yet exist (i.e. migration `2026-04-27_audit_pro_and_diagnostics.sql` has not been run), PRO endpoints return empty paginated results instead of an error.
+</Note>
+
+---
+
+## Complete list of audited actions
+
+The following table lists every `Action` value currently written by the API, along with its module and the event that triggers it.
+
+| Action | Module | Trigger |
+|---|---|---|
+| `LOGIN` | `AUTH` | Successful or failed login attempt |
+| `REGISTER_CUSTOMER` | `AUTH` | Self-registration via `POST /api/auth/register` |
+| `REGISTER_INTERNAL` | `AUTH` | Internal user creation via `POST /api/auth/register/internal` |
+| `CHANGE_PASSWORD` | `AUTH` | Password change via `POST /api/auth/change-password` |
+| `DELETE_PORTAL_USER` | `AUTH` | User deactivation via `DELETE /api/auth/users/{id}` |
+| `CREATE_SERVICE_REQUEST` | `SERVICE_REQUESTS` | New service request submitted |
+| `UPDATE_REQUEST_STATUS` | `SERVICE_REQUESTS` | Service request status transition |
+| `UPLOAD_ATTACHMENT` | `SERVICE_REQUESTS` | Optional file attached to a request |
+| `UPLOAD_INVOICE` | `SERVICE_REQUESTS` | Invoice attached by an admin |
+| `UPLOAD_DELIVERY_ATTACHMENT` | `SERVICE_REQUESTS` | Delivery document attached by a gestor |
+| `RESOLVE_CANCELLATION_REMINDER` | `SERVICE_REQUESTS` | Cancellation reminder marked resolved |
+| `DELETE_SERVICE_REQUEST` | `SERVICE_REQUESTS` | Request deleted by `SUPER_ADMIN` |
+| `VALIDATE_PAYMENT` | `PAYMENTS` | Payment proof approved |
+| `REJECT_PAYMENT` | `PAYMENTS` | Payment proof rejected |
+| `CONFIRM_REFUND` | `PAYMENTS` | Refund confirmed by gestor |
+| `UPLOAD_PAYMENT_PROOF` | `UPLOADS` | Payment proof image uploaded |
+
+In addition, the following actions are written by stored procedures into the legacy `InsertAuditLog` table:
+
+| Action (legacy) | Stored Procedure |
+|---|---|
+| `SELF_REGISTER` / `REGISTER_CUSTOMER` | `RegisterCustomerUser` |
+| `CHANGE_PASSWORD` | `ChangeUserPassword` |
+| `LOGIN` / `LOGIN_FAILED` | `Auth_Login` |
+| `CREATE` | `CreateService` |
+| `UPDATE` | `UpdateService` |
+| `STATUS_CHANGE` | `ToggleServiceStatus` |
+| `DELETE` | `DeleteService` |
+| `INSERT` | `CreateServiceRequest`, `CreateServiceRequestAttachment` |
+| `UPDATE` | `UpdateServiceRequestStatus`, `ValidateServiceRequestPayment` |

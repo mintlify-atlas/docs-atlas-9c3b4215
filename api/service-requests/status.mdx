@@ -1,0 +1,132 @@
+---
+title: "Update service request status and manage cancellations"
+sidebarTitle: "Status"
+description: "PUT /api/servicerequests/{id}/status changes request state. Customers can cancel from SOLICITADO; admins manage the full lifecycle including cancellation reminders."
+---
+
+Every service request moves through a defined set of states from the moment it is submitted until it is completed or cancelled. The status endpoint exposes a single `PUT` call that accepts a target state; the actual transition rules — including which roles may trigger which transitions — are enforced inside the `UpdateServiceRequestStatus` stored procedure, not solely in the API controller. This means invalid transitions are rejected at the database layer and return a descriptive error message regardless of how the request arrives.
+
+## Status lifecycle
+
+| Transition | Trigger |
+|---|---|
+| `SOLICITADO` → `EN_PROCESO` | Payment approved by an admin via `PUT /api/servicerequests/{id}/payment` |
+| `SOLICITADO` → `CANCELADO_USUARIO` | Customer cancels their own request while still in `SOLICITADO` |
+| `SOLICITADO` → `CANCELADO_PAGO` | Payment rejected by an admin via `PUT /api/servicerequests/{id}/payment` |
+| `EN_PROCESO` → `FINALIZADO` | Staff marks the service as completed |
+
+<Warning>
+  Status transition rules are enforced at the SQL stored procedure layer (`UpdateServiceRequestStatus`). Attempting an invalid transition — such as moving a `FINALIZADO` request back to `EN_PROCESO`, or a customer trying to cancel a request that is already `EN_PROCESO` — will return an error from the stored procedure. The API surfaces this error directly to the caller.
+</Warning>
+
+---
+
+## PUT /api/servicerequests/{id}/status — Change status
+
+Changes the status of a service request. All authenticated users can call this endpoint, but the stored procedure enforces role-based rules on which transitions each caller may perform. Customers, for example, can only set `CANCELADO_USUARIO` and only when the request is currently in `SOLICITADO` state.
+
+**Authentication:** Bearer token (any role — transitions restricted by SQL procedure)
+
+### Path parameters
+
+<ParamField path="id" type="integer" required>
+  The `requestId` of the service request to update.
+</ParamField>
+
+### Request body
+
+<ParamField body="newStatus" type="string" required>
+  The target status for the request. Must be one of: `SOLICITADO`, `EN_PROCESO`, `FINALIZADO`, `CANCELADO_USUARIO`, `CANCELADO_PAGO`. Returns `400 Bad Request` if this field is absent or blank.
+</ParamField>
+
+### Response
+
+Returns `200 OK` with an empty body on success.
+
+---
+
+## GET /api/servicerequests/cancellation-reminders — Pending refund reminders
+
+When a customer cancels a request (`CANCELADO_USUARIO`), the system automatically creates a cancellation reminder record to alert staff that a refund is pending. This endpoint returns all unresolved reminders for the caller's company.
+
+**Authentication:** Bearer token — `SUPER_ADMIN`, `ADMIN_GENERAL`, `GESTOR_SUPREMO`, or `GESTOR`
+
+### Response
+
+Returns an array of cancellation reminder objects.
+
+<ResponseField name="reminderID" type="integer">Unique identifier of the reminder record.</ResponseField>
+<ResponseField name="companyID" type="integer">ID of the company this reminder belongs to.</ResponseField>
+<ResponseField name="requestID" type="integer">ID of the cancelled service request that triggered the reminder.</ResponseField>
+<ResponseField name="message" type="string">Human-readable description of the pending action.</ResponseField>
+<ResponseField name="createdAt" type="string (ISO 8601)">Timestamp when the reminder was created (i.e., when the customer cancelled).</ResponseField>
+<ResponseField name="isResolved" type="boolean">Whether the reminder has been marked as handled.</ResponseField>
+<ResponseField name="resolvedAt" type="string (ISO 8601)">Timestamp when the reminder was resolved, if applicable.</ResponseField>
+
+---
+
+## PUT /api/servicerequests/cancellation-reminders/{id}/resolve — Mark reminder resolved
+
+Marks a cancellation reminder as handled. Call this after you have confirmed the refund via `PUT /api/servicerequests/{requestId}/refund` (see the [Payments](/api/service-requests/payments) page) to remove the reminder from the pending queue.
+
+**Authentication:** Bearer token — `SUPER_ADMIN`, `ADMIN_GENERAL`, `GESTOR_SUPREMO`, or `GESTOR`
+
+### Path parameters
+
+<ParamField path="id" type="integer" required>
+  The `reminderID` of the cancellation reminder to resolve.
+</ParamField>
+
+### Response
+
+Returns `200 OK` with an empty body on success.
+
+---
+
+## Examples
+
+**Customer cancels a request**
+
+```bash
+curl -X PUT https://your-api/api/servicerequests/123/status \
+  -H "Authorization: Bearer <customer-token>" \
+  -H "Content-Type: application/json" \
+  -d '{ "newStatus": "CANCELADO_USUARIO" }'
+```
+
+**Staff marks a request as completed**
+
+```bash
+curl -X PUT https://your-api/api/servicerequests/123/status \
+  -H "Authorization: Bearer <staff-token>" \
+  -H "Content-Type: application/json" \
+  -d '{ "newStatus": "FINALIZADO" }'
+```
+
+**View all pending cancellation reminders**
+
+```bash
+curl https://your-api/api/servicerequests/cancellation-reminders \
+  -H "Authorization: Bearer <staff-token>"
+```
+
+```json
+[
+  {
+    "reminderID": 9,
+    "companyID": 1,
+    "requestID": 123,
+    "message": "El cliente canceló su solicitud. Pendiente de reintegro.",
+    "createdAt": "2026-04-22T14:30:00",
+    "isResolved": false,
+    "resolvedAt": null
+  }
+]
+```
+
+**Resolve a reminder after handling the refund**
+
+```bash
+curl -X PUT https://your-api/api/servicerequests/cancellation-reminders/9/resolve \
+  -H "Authorization: Bearer <staff-token>"
+```

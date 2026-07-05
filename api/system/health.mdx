@@ -1,0 +1,157 @@
+---
+title: "Health check endpoints: /health/live and /health/ready"
+sidebarTitle: "Health"
+description: "Two public health endpoints for liveness and readiness probes. /health/live always returns 200; /health/ready checks database connectivity and storage access."
+---
+
+The ServiciosYa API exposes two health endpoints at the root level — outside the `/api/v1` prefix and without any authentication requirement. They are designed for use by container orchestrators, load balancers, and uptime monitors to determine whether the process is running and whether it is ready to serve traffic. Neither endpoint is gated by the `EnableDiagnostics` flag; they are always available regardless of configuration.
+
+<Note>
+  These endpoints do **not** require an `Authorization` header. They are intentionally public so that infrastructure probes can reach them without credentials.
+</Note>
+
+---
+
+## GET /health/live — Liveness probe
+
+The liveness endpoint is a minimal signal that the process is alive. It performs no I/O and always responds `200 OK` as long as the ASP.NET Core request pipeline is running. Use it to tell your orchestrator when a pod or container should be restarted.
+
+**Authentication:** None  
+**Method:** `GET`  
+**Path:** `/health/live`
+
+### Response — 200 OK
+
+```json
+{
+  "status": "OK",
+  "timestampUtc": "2026-05-01T12:00:00Z"
+}
+```
+
+<ResponseField name="status" type="string">
+  Always `"OK"`. This value never changes — the endpoint only returns when the process is responsive.
+</ResponseField>
+
+<ResponseField name="timestampUtc" type="string (ISO 8601)">
+  The current UTC timestamp at the moment the response was generated.
+</ResponseField>
+
+### Example
+
+```bash
+curl -i https://api.serviciosya.com/health/live
+```
+
+```
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{"status":"OK","timestampUtc":"2026-05-01T12:00:00Z"}
+```
+
+---
+
+## GET /health/ready — Readiness probe
+
+The readiness endpoint performs two active checks before responding: it opens a SQL Server connection and executes `SELECT 1` to verify database reachability, and it writes and deletes a small temporary file under `wwwroot/uploads` to confirm filesystem access. The overall status reflects the worst result across both components. Use this endpoint to tell your orchestrator when a pod should start receiving traffic.
+
+**Authentication:** None  
+**Method:** `GET`  
+**Path:** `/health/ready`
+
+### Response — 200 OK (all components healthy)
+
+```json
+{
+  "status": "OK",
+  "timestampUtc": "2026-05-01T12:00:00Z",
+  "components": [
+    { "name": "sqlserver", "status": "OK",    "message": "Conexion SQL disponible." },
+    { "name": "storage",   "status": "OK",    "message": "Acceso a almacenamiento disponible." }
+  ]
+}
+```
+
+### Response — 503 Service Unavailable (one or more components unhealthy)
+
+```json
+{
+  "status": "Error",
+  "timestampUtc": "2026-05-01T12:00:00Z",
+  "components": [
+    { "name": "sqlserver", "status": "Error", "message": "No se pudo verificar SQL Server." },
+    { "name": "storage",   "status": "OK",    "message": "Acceso a almacenamiento disponible." }
+  ]
+}
+```
+
+<ResponseField name="status" type="string">
+  Aggregate status of all components. Possible values:
+
+  | Value | Meaning |
+  |-------|---------|
+  | `OK` | All components are healthy. |
+  | `Warning` | At least one component degraded but none errored. |
+  | `Error` | At least one component returned an error. |
+</ResponseField>
+
+<ResponseField name="timestampUtc" type="string (ISO 8601)">
+  UTC timestamp when the check was executed.
+</ResponseField>
+
+<ResponseField name="components" type="array">
+  List of individual component check results.
+</ResponseField>
+
+<ResponseField name="components[].name" type="string">
+  Component identifier. Currently `"sqlserver"` and `"storage"`.
+</ResponseField>
+
+<ResponseField name="components[].status" type="string">
+  Per-component status: `"OK"` or `"Error"`.
+</ResponseField>
+
+<ResponseField name="components[].message" type="string">
+  Human-readable diagnostic message in Spanish describing the outcome.
+</ResponseField>
+
+### Example
+
+```bash
+# Healthy
+curl -i https://api.serviciosya.com/health/ready
+
+# Unhealthy — SQL Server unreachable
+# HTTP 503 is returned; inspect "components" to identify which check failed
+curl -s https://api.serviciosya.com/health/ready | jq '.components'
+```
+
+---
+
+## Kubernetes / Docker configuration
+
+<Tip>
+  Configure `/health/ready` as the **readiness probe** and `/health/live` as the **liveness probe**. This way Kubernetes will stop routing traffic to a pod that cannot reach the database (readiness failure) without restarting a pod that is merely waiting for DB connectivity to recover (liveness still passing).
+
+  ```yaml
+  livenessProbe:
+    httpGet:
+      path: /health/live
+      port: 8080
+    initialDelaySeconds: 5
+    periodSeconds: 10
+
+  readinessProbe:
+    httpGet:
+      path: /health/ready
+      port: 8080
+    initialDelaySeconds: 10
+    periodSeconds: 15
+    failureThreshold: 3
+  ```
+</Tip>
+
+<Note>
+  Unlike the `/api/v1/system/*` diagnostics endpoints, the health endpoints are **never** disabled by the `Diagnostics:EnableDiagnostics` configuration flag. They are always reachable.
+</Note>
