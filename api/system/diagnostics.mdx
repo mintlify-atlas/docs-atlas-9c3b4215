@@ -1,7 +1,7 @@
 ---
 title: "System diagnostics: status, metrics, and resource snapshots"
 sidebarTitle: "Diagnostics"
-description: "Three SUPER_ADMIN-only endpoints under /api/v1/system: server status with uptime, request metrics snapshot, and process resource usage."
+description: "Four SUPER_ADMIN-only endpoints under /api/v1/system: server status with uptime, request metrics snapshot, and process resource usage."
 ---
 
 The system diagnostics endpoints give `SUPER_ADMIN` operators a real-time view into the running API process: server identity and uptime, in-memory request metrics, live process resource usage, and a feed of recent error events pulled from the PRO audit log. All four endpoints live under `/api/v1/system`, require a valid JWT issued to a `SUPER_ADMIN` account, and will return `500` with the message `"Diagnostico deshabilitado."` if `Diagnostics:EnableDiagnostics` is set to `false` in application configuration.
@@ -116,7 +116,7 @@ Returns a snapshot of in-memory request counters and response-time statistics co
   Cumulative count of all requests completed since the process started. Never resets without a restart.
 </ResponseField>
 
-<ResponseField name="requestsPerMinute" type="integer">
+<ResponseField name="requestsPerMinute" type="number">
   Number of requests completed in the last 60 seconds at the moment of the snapshot.
 </ResponseField>
 

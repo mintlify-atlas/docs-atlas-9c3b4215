@@ -1,7 +1,7 @@
 ---
 title: "Register users: public customer and internal staff endpoints"
 sidebarTitle: "Register"
-description: "Two registration endpoints: POST /api/auth/register for public customer self-registration, and POST /api/auth/register/internal for role-based internal user creation."
+description: "Two registration flows: public self-registration for customers, and role-gated internal user creation for administrators and managers."
 ---
 
 ServiciosYa exposes two distinct user-registration flows. The first is a fully public endpoint that allows customers to create their own accounts. The second is a protected endpoint used by administrators and managers to create internal staff accounts; it enforces a role hierarchy so that a caller can only assign roles equal to or below their own level in the hierarchy.

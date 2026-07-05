@@ -43,7 +43,7 @@ The `dbo.AuditEvents` table (created by `2026-04-27_audit_pro_and_diagnostics.sq
 | `IpAddress` | `NVARCHAR(64)` | Client IP address |
 | `UserAgent` | `NVARCHAR(512)` | HTTP `User-Agent` header value |
 | `Result` | `NVARCHAR(20)` | `Success` or `Fail` |
-| `Severity` | `NVARCHAR(20)` | `Info` or `Warning` |
+| `Severity` | `NVARCHAR(20)` | `Info`, `Warning`, `Error`, or `Critical` |
 | `Message` | `NVARCHAR(500)` | Human-readable description of the event |
 | `IsVisibleForAdmins` | `BIT` | Whether `ADMIN_GENERAL` can see this event (default `1`) |
 | `HiddenByUserId` | `INT` (nullable) | User who hid the event (set by hide/unhide operations) |
@@ -87,6 +87,7 @@ Field-level diffs are stored in `dbo.AuditChanges`, linked to `dbo.AuditEvents` 
   "userId": 42,
   "companyId": 1,
   "username": "john.doe",
+  "companyName": "ServiciosYa",
   "dateFromUtc": "2026-04-01T00:00:00Z",
   "dateToUtc": "2026-04-30T23:59:59Z",
   "correlationId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
@@ -105,6 +106,9 @@ All filter fields are optional. Omit any field to match all values for that dime
   "totalRows": 1,
   "pageNumber": 1,
   "pageSize": 50,
+  "totalPages": 1,
+  "hasNext": false,
+  "hasPrevious": false,
   "data": [
     {
       "id": 1001,
@@ -189,7 +193,7 @@ curl -X POST https://api.example.com/api/v1/audit/1001/hide \
   -H "Authorization: Bearer <token>"
 ```
 
-Sets `IsVisibleForAdmins = 0`, records `HiddenByUserId` and `HiddenAtUtc`.
+Sets `IsVisibleForAdmins = 0`, records `HiddenByUserId` and `HiddenAtUtc`. Returns `{ "message": "Evento ocultado." }`.
 
 ### Unhide an event
 
@@ -201,7 +205,7 @@ curl -X POST https://api.example.com/api/v1/audit/1001/unhide \
   -H "Authorization: Bearer <token>"
 ```
 
-Sets `IsVisibleForAdmins = 1` and clears `HiddenByUserId` and `HiddenAtUtc`.
+Sets `IsVisibleForAdmins = 1` and clears `HiddenByUserId` and `HiddenAtUtc`. Returns `{ "message": "Evento restaurado." }`.
 
 ---
 
@@ -216,10 +220,10 @@ The legacy system predates the PRO tables and is backed by the `dbo.InsertAuditL
 
 ```json
 {
-  "userId": 42,
+  "userID": 42,
   "actionType": "LOGIN",
   "entityName": "User",
-  "entityId": 42,
+  "entityID": 42,
   "searchValue": "john",
   "dateFrom": "2026-04-01T00:00:00Z",
   "dateTo": "2026-04-30T23:59:59Z",
@@ -230,30 +234,38 @@ The legacy system predates the PRO tables and is backed by the `dbo.InsertAuditL
 
 **Response `200 OK`**
 
+The response is wrapped in an envelope with a `success` flag. The `data` object is a paginated result:
+
 ```json
 {
-  "totalRows": 12,
-  "pageNumber": 1,
-  "pageSize": 50,
-  "data": [
-    {
-      "auditID": 7001,
-      "userID": 42,
-      "username": "john.doe",
-      "companyName": "ServiciosYa",
-      "actionType": "LOGIN",
-      "entityName": "User",
-      "entityID": 42,
-      "oldValues": null,
-      "newValues": "{\"Username\":\"john.doe\",\"Role\":\"CUSTOMER\",\"Result\":\"SUCCESS\"}",
-      "iPAddress": "203.0.113.45",
-      "createdAt": "2026-04-15T14:32:10Z"
-    }
-  ]
+  "success": true,
+  "data": {
+    "totalRows": 12,
+    "pageNumber": 1,
+    "pageSize": 50,
+    "totalPages": 1,
+    "hasNext": false,
+    "hasPrevious": false,
+    "data": [
+      {
+        "auditID": 7001,
+        "userID": 42,
+        "username": "john.doe",
+        "companyName": "ServiciosYa",
+        "actionType": "LOGIN",
+        "entityName": "User",
+        "entityID": 42,
+        "oldValues": null,
+        "newValues": "{\"Username\":\"john.doe\",\"Role\":\"CUSTOMER\",\"Result\":\"SUCCESS\"}",
+        "iPAddress": "203.0.113.45",
+        "createdAt": "2026-04-15T14:32:10Z"
+      }
+    ]
+  }
 }
 ```
 
-Legacy log entries are enriched at query time: `Username` and `CompanyName` are resolved by joining `dbo.[User]` and `dbo.Company` respectively, so the raw stored values (numeric IDs) are translated into human-readable labels.
+Legacy log entries are enriched at query time: `username` and `companyName` are resolved by joining `dbo.[User]` and `dbo.Company` respectively, so the raw stored values (numeric IDs) are translated into human-readable labels.
 
 <Note>
   Legacy audit entries do not support the hide/unhide operations or field-level `changes` arrays. Those features are exclusive to the PRO system. If the `dbo.AuditEvents` table does not yet exist (i.e. migration `2026-04-27_audit_pro_and_diagnostics.sql` has not been run), PRO endpoints return empty paginated results instead of an error.
@@ -283,6 +295,8 @@ The following table lists every `Action` value currently written by the API, alo
 | `REJECT_PAYMENT` | `PAYMENTS` | Payment proof rejected |
 | `CONFIRM_REFUND` | `PAYMENTS` | Refund confirmed by gestor |
 | `UPLOAD_PAYMENT_PROOF` | `UPLOADS` | Payment proof image uploaded |
+| `HIDE_AUDIT_EVENT` | `AUDIT` | Audit event hidden from admins via `POST /api/v1/audit/{id}/hide` |
+| `UNHIDE_AUDIT_EVENT` | `AUDIT` | Audit event made visible again via `POST /api/v1/audit/{id}/unhide` |
 
 In addition, the following actions are written by stored procedures into the legacy `InsertAuditLog` table:
 

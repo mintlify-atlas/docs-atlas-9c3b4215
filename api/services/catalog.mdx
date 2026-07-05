@@ -1,5 +1,5 @@
 ---
-title: "Service catalog CRUD: create, update, toggle, and delete services"
+title: "Service catalog endpoints: create, update, toggle, delete"
 sidebarTitle: "Catalog"
 description: "Full CRUD endpoints for the ServiciosYa service catalog. Create, update, activate/deactivate, delete, and query services by category or search term."
 ---
@@ -359,8 +359,10 @@ The following fields are returned in service read responses.
   | `LEGALES` | `Escribania y legales` |
   | `DOCUMENTOS` | `Presentacion de documentos` |
   | `COMPRAS` | `Pago de impuestos, patentes y otros` |
+  | `TRADUCCIONES LEGALES` | `Traducciones legales` |
   | `DELIVERYS` | `Delivery` |
   | `OTHER` | `Otros` |
+  | `OTROS` | `Otros` |
 
   Any value that does not match a canonical category or a known alias will result in a validation error from the underlying stored procedure.
 </Note>

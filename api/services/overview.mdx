@@ -1,7 +1,7 @@
 ---
 title: "Services API overview: catalog management and discovery"
 sidebarTitle: "Overview"
-description: "ServiciosYa API organizes services by category with activation states, pricing, and attachment flags. Admin roles manage the catalog; customers browse available services."
+description: "ServiciosYa catalog services carry a category, activation state, price, and attachment flag. Admin roles manage entries; customers browse active services."
 ---
 
 The ServiciosYa Services API is the backbone of the platform's service catalog. Every service offered by a company is represented as a structured record that captures its name, pricing, category, estimated completion time, and several operational flags. Staff roles create and maintain these records; customers discover them through a filtered, customer-facing listing endpoint. Two distinct subsystems live under this domain: the **service catalog** (full CRUD for structured services) and **custom service requests** (free-form inquiries for services that are not yet in the catalog).
@@ -25,7 +25,6 @@ A service is a tenant-scoped catalog entry that describes a single offering a co
 | `category` | `string` | One of the defined service categories (see below). |
 | `permiteAdjunto` | `bool` | When `true`, the service request form may include an optional file attachment beyond the payment voucher. |
 | `isActive` | `bool` | Controls visibility in the customer-facing catalog. |
-| `isDeleted` | `bool` | Logical deletion flag. Deleted services are hidden from all listings. |
 
 ## Service categories
 

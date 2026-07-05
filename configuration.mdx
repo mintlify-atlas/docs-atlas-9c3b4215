@@ -224,10 +224,10 @@ Use this skeleton as your `appsettings.Production.json`. Sensitive values are in
   },
   "AllowedHosts": "api.tramiya.com.py",
   "ConnectionStrings": {
-    "DefaultConnection": "__SET_VIA_ENV: ConnectionStrings__DefaultConnection__"
+    "DefaultConnection": "__CONFIGURAR_EN_VARIABLE_DE_ENTORNO__"
   },
   "Jwt": {
-    "Key": "__SET_VIA_ENV: Jwt__Key__",
+    "Key": "__CONFIGURAR_EN_VARIABLE_DE_ENTORNO__",
     "Issuer": "TramiYaAPI"
   },
   "Email": {
@@ -235,7 +235,7 @@ Use this skeleton as your `appsettings.Production.json`. Sensitive values are in
     "Host": "__SMTP_HOST__",
     "Port": 587,
     "Username": "__SMTP_USER__",
-    "Password": "__SET_VIA_ENV: Email__Password__",
+    "Password": "__CONFIGURAR_EN_VARIABLE_DE_ENTORNO__",
     "FromAddress": "__SMTP_FROM__",
     "FromName": "TramiYa",
     "EnableSsl": true

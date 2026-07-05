@@ -19,6 +19,10 @@ The login endpoint validates a username and password against the ServiciosYa dat
 
 ## Request body
 
+<ParamField body="companyId" type="integer">
+  Company scope for the login attempt. This field is accepted by the API but is not currently used in credential validation — the user lookup is performed by username alone. Defaults to `0` when omitted.
+</ParamField>
+
 <ParamField body="username" type="string" required>
   The user's login username. Typically an email address but the field is treated as a free-form identifier scoped to the company.
 </ParamField>

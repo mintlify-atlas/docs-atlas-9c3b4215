@@ -1,7 +1,7 @@
 ---
 title: "Update service request status and manage cancellations"
 sidebarTitle: "Status"
-description: "PUT /api/servicerequests/{id}/status changes request state. Customers can cancel from SOLICITADO; admins manage the full lifecycle including cancellation reminders."
+description: "PUT /api/servicerequests/{id}/status changes request state. Customers cancel from SOLICITADO; admins manage the full lifecycle and cancellation reminders."
 ---
 
 Every service request moves through a defined set of states from the moment it is submitted until it is completed or cancelled. The status endpoint exposes a single `PUT` call that accepts a target state; the actual transition rules — including which roles may trigger which transitions — are enforced inside the `UpdateServiceRequestStatus` stored procedure, not solely in the API controller. This means invalid transitions are rejected at the database layer and return a descriptive error message regardless of how the request arrives.

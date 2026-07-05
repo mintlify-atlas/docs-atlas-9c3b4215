@@ -1,7 +1,7 @@
 ---
 title: "Validate payments and confirm refunds on service requests"
 sidebarTitle: "Payments"
-description: "PUT /api/servicerequests/{id}/payment approves or rejects a payment proof. PUT /api/servicerequests/{id}/refund confirms a customer refund after cancellation."
+description: "PUT /api/servicerequests/{id}/payment approves or rejects a payment proof. PUT /{id}/refund confirms a customer refund after cancellation."
 ---
 
 Every service request carries a linked payment record that is created automatically in `PENDIENTE` state when the request is submitted. Staff with the appropriate roles review the uploaded payment proof image and either approve or reject it. When a customer cancels a request that already has a payment on file, the payment moves to `PENDIENTE_DEVOLUCION` until a staff member confirms the money was returned using the refund endpoint.

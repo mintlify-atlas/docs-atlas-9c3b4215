@@ -1,7 +1,7 @@
 ---
 title: "Health check endpoints: /health/live and /health/ready"
 sidebarTitle: "Health"
-description: "Two public health endpoints for liveness and readiness probes. /health/live always returns 200; /health/ready checks database connectivity and storage access."
+description: "Public liveness and readiness probes: /health/live always returns 200; /health/ready verifies database connectivity and filesystem access."
 ---
 
 The ServiciosYa API exposes two health endpoints at the root level — outside the `/api/v1` prefix and without any authentication requirement. They are designed for use by container orchestrators, load balancers, and uptime monitors to determine whether the process is running and whether it is ready to serve traffic. Neither endpoint is gated by the `EnableDiagnostics` flag; they are always available regardless of configuration.

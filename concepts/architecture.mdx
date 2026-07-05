@@ -63,7 +63,9 @@ flowchart LR
     --> CID["CorrelationId\nMiddleware"]
     --> LOG["RequestLogging\nMiddleware"]
     --> ERR["ErrorHandling\nMiddleware"]
+    --> CORS["UseCors"]
     --> AUTH["UseAuthentication\n+ UseAuthorization"]
+    --> STA["UseStaticFiles"]
     --> CTRL["Controllers"]
 ```
 
@@ -77,11 +79,14 @@ flowchart LR
   <Step title="ErrorHandlingMiddleware">
     Wraps the remaining pipeline in a `try/catch`. Converts `SqlException`, `UnauthorizedAccessException`, `InvalidOperationException`, and unhandled `Exception` into the standard JSON error envelope `{ success, data, error: { code, message } }`. When `Diagnostics:EnableDetailedErrors` is `false` (the default in production), internal details are suppressed and sensitive keywords (`password`, `token`, `authorization`) are redacted.
   </Step>
+  <Step title="CORS">
+    `UseCors("AllowAngular")` applies the CORS policy that permits the Angular web portal origins (`localhost:4200`, `app.tramiya.com.py`, `tramiya.com.py`) and any header or method. Running CORS before authentication ensures that preflight `OPTIONS` requests are answered without requiring a valid Bearer token.
+  </Step>
   <Step title="Authentication & Authorization">
     ASP.NET Core's built-in `UseAuthentication` validates the JWT Bearer token and populates `HttpContext.User`. `UseAuthorization` then enforces `[Authorize(Roles = "...")]` attributes on controllers.
   </Step>
-  <Step title="Controllers">
-    Matched routes are executed. Static files under `wwwroot/uploads` are served by `UseStaticFiles`, which runs after authorization in the pipeline.
+  <Step title="Static Files & Controllers">
+    `UseStaticFiles` serves uploaded files from `wwwroot/uploads` directly, after authorization. `MapControllers` then dispatches authenticated, authorized requests to the appropriate controller action.
   </Step>
 </Steps>
 
